@@ -1,0 +1,29 @@
+experiment_id: ch05-prod-agent-001-manual-vs-agentic
+model:
+  name: synthetic-llm-sim
+  temperature: 0.1
+  max_tokens: 512
+  # This experiment uses a rule-based stand-in for an LLM; in production
+  # you would replace it with real model invocation code.
+tools:
+  - ticketing_api
+  - crm_billing_api
+  - kb_search_api
+workflow:
+  name: Low-Complexity Billing and Account Inquiries
+  categories:
+    - billing-question
+    - invoice-copy-request
+    - plan-change-info
+    - address-update-info
+    - account-status-info
+    - out-of-scope
+policy:
+  max_credit: 0        # Read-only; no financial adjustments
+  can_update_billing_data: false
+hitl:
+  edit_minor_threshold_ratio: 0.2
+  approve_confidence_threshold: 0.7
+costs:
+  human_hourly_rate: 30.0     # Fully-loaded hourly cost, in arbitrary currency units
+  model_cost_per_1k_tokens: 0.002  # Synthetic per-1k-token cost

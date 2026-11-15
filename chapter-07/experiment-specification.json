@@ -1,0 +1,647 @@
+{
+  "experiment_id": "ch7-durable-workflows-approvals-exceptions-v1",
+  "hypothesis": "A durable, state-machine-based workflow engine with persisted state, idempotent operations, human approval gates, and automated retry/recovery logic will (a) reduce unrecovered failure rate and (b) improve SLA adherence for long-running agentic workflows under outages and load, compared with a naive, in-memory, linear-orchestration agent workflow, without materially degrading end-to-end latency under normal conditions.",
+  "baseline": {
+    "description": "Naive long-running agentic workflow orchestrated in-process with minimal durability and weak failure handling.",
+    "architecture": {
+      "orchestrator_type": "single-process linear orchestrator (Python service)",
+      "state_management": "in-memory Python objects only; no persisted workflow state across process restarts",
+      "workflow_model": "hard-coded imperative sequence of steps; no explicit state machine or BPMN-like representation",
+      "task_execution": "each step executed synchronously; long-running operations simulated via sleep or long API calls",
+      "approvals": "human approval requested via email or chat simulation but not enforced as a blocking state; if a response arrives late or orchestrator restarts, the approval is lost",
+      "exception_handling": "basic try/except with logging; on unhandled exception, workflow is marked failed with no retry or compensating actions",
+      "retries": "best-effort implicit retry at HTTP client level only (e.g., requests library defaults); no workflow-level structured retry with backoff or max attempts",
+      "audit_logging": "application logs in stdout/console only; not structured, not correlated by workflow instance ID",
+      "idempotency": "no idempotency keys; side-effecting operations can be duplicated on orchestrator retry or network flakiness",
+      "resilience": "no explicit support for resuming workflows after process crash, host restart, or DB outage"
+    },
+    "business_scenario": "Simulated mid-market B2B SaaS customer onboarding workflow (contract signed \u2192 account configuration \u2192 internal approvals \u2192 provisioning tasks \u2192 welcome notification) running as an agentic workflow with minimal durability.",
+    "implementation_notes": {
+      "language": "Python 3.10+",
+      "stack": [
+        "FastAPI or Flask for HTTP entrypoints",
+        "Requests or httpx for outbound HTTP calls",
+        "Simple in-memory Python dict/list structures to track active workflows",
+        "Background thread or asyncio task manager for long-running work"
+      ],
+      "limitations": [
+        "If the orchestrator process restarts, all in-flight workflows are lost",
+        "If external services fail transiently, entire workflow may fail without retries",
+        "Approval steps can be skipped or lost if human is unavailable within pre-defined time",
+        "No reliable audit trail suitable for compliance or forensic review"
+      ]
+    }
+  },
+  "treatment": {
+    "description": "Durable, explicit state-machine-based agentic workflow engine with persisted state, human approval gates, exception paths, and structured retries plus chaos and load-tested resilience.",
+    "architecture": {
+      "orchestrator_type": "durable workflow engine implemented as a Python service managing explicit workflow state machines",
+      "state_management": "PostgreSQL-backed durable persistence; each workflow instance stored with current state, history/events, and pending timers; orchestrator is stateless with respect to workflow progression and can scale horizontally",
+      "workflow_model": "declarative state machine (e.g., JSON/YAML or Python class config) where each state has: name, type (task, approval, wait, terminal), entry action (agent/tool invocation), transitions (success, failure, timeout, escalation), and optional compensation handlers",
+      "task_execution": "tasks executed via asynchronous workers (e.g., Celery / RQ / custom async queue) with clear separation between orchestration and execution; long-running tasks represented via scheduled callbacks or polling patterns",
+      "approvals": "explicit approval states that: persist pending approvals, block further progression until human decision is recorded, support SLAs with timeouts and escalations (e.g., re-route to manager or alternative queue), and resume workflow from current state after approval or rejection; approvals communicated via simulated email/Slack adapters writing to and reading from a test inbox or queue",
+      "exception_handling": "structured exception taxonomy (e.g., transient vs. permanent vs. business-rule vs. human-escalation); per-state exception strategies (retry, skip, compensate, escalate to human, abort with classification); handled exceptions transition the workflow into error-handling states or human takeover states, not process-level crashes",
+      "retries": "configurable, persisted retry policy per state (max_attempts, backoff_strategy, jitter, retryable_error_types); retries scheduled via durable timers stored in DB or via a queue delay mechanism; retry counters and last_error persisted per step to avoid infinite loops",
+      "audit_logging": "compliance-ready audit log table / index with immutable append-only events including: workflow_instance_id, timestamp, actor_type (agent/human/system), action_type (state_entered, state_exited, tool_call, approval_requested, approval_granted, exception_raised, retry_scheduled, compensation_run), parameters hash, correlation IDs; logs queryable by workflow, user, and timeframe",
+      "idempotency": "idempotency keys for side-effecting operations (e.g., 'provision-account', 'create-ticket') derived from workflow_instance_id + logical_step_id; before calling an external system, engine checks previous successful execution with same key to avoid duplicates after retries; external service mock honors idempotency keys",
+      "resilience": "workflow progression driven by persisted state and events; orchestrator and workers can restart without data loss; timers for delayed steps are reloaded from DB; engine supports pausing/resuming workflows, and explicit 'human_takeover' terminal or sub-states; designed to be horizontally scalable under load"
+    },
+    "business_scenario": "Same simulated mid-market B2B SaaS customer onboarding workflow (contract signed \u2192 account configuration \u2192 internal approvals \u2192 provisioning tasks \u2192 welcome notification) now implemented as a durable, auditable, and resilient state-machine workflow with explicit approvals and exception handling.",
+    "implementation_notes": {
+      "language": "Python 3.10+",
+      "stack": [
+        "FastAPI for HTTP APIs (start workflow, approve step, query status)",
+        "PostgreSQL 13+ for durable workflow and audit persistence",
+        "Redis + RQ or Celery for background job queue (or pure async workers + DB-based timers)",
+        "SQLAlchemy or equivalent ORM for data access",
+        "Pydantic for workflow and event schemas",
+        "Docker Compose for local multi-service environment"
+      ],
+      "durability_features": [
+        "Workflow state transitions stored transactionally in PostgreSQL",
+        "At-least-once delivery semantics for tasks, with idempotent side-effects",
+        "Persisted timers for retries and SLAs on approval states",
+        "Full replay capability of workflow history to reconstruct decisions"
+      ]
+    }
+  },
+  "workloads": [
+    {
+      "name": "normal_operation_workload",
+      "description": "Baseline throughput test of the onboarding workflow under normal, failure-free conditions to compare latency, cost, and overhead between naive and durable implementations.",
+      "input_profile": {
+        "workflow_type": "customer_onboarding",
+        "concurrent_instances": [
+          10,
+          50,
+          100
+        ],
+        "arrival_pattern": "Poisson process approximated by random inter-arrival times over 30 minutes per run level",
+        "data_variation": [
+          "Different account sizes (small/medium/large) affecting number of provisioning subtasks",
+          "Different approval routing paths (single approver vs. two-level approval) determined by customer ARR threshold",
+          "Randomized but valid customer metadata to ensure realistic payload sizes"
+        ],
+        "human_approval_behavior": {
+          "model": "simulated responders",
+          "approval_latency_distribution_sec": {
+            "p50": 60,
+            "p90": 300,
+            "max": 900
+          },
+          "decision_mix": {
+            "approve": 0.8,
+            "reject": 0.1,
+            "request_changes": 0.1
+          }
+        }
+      },
+      "execution_instructions": {
+        "baseline": {
+          "run_duration_minutes": 30,
+          "steps": [
+            "Deploy baseline service stack via Docker Compose with in-memory orchestrator and mock external services.",
+            "Use a load generator script to POST workflow start requests at configured inter-arrival times.",
+            "Simulate human approvals by polling a 'pending approvals' endpoint or log output and posting decisions after sampled latency.",
+            "Record per-workflow timestamps for: start, approval requested, approval completed, workflow completed.",
+            "Ensure no artificial failures (external services return success; no induced process crashes)."
+          ]
+        },
+        "treatment": {
+          "run_duration_minutes": 30,
+          "steps": [
+            "Deploy treatment stack via Docker Compose with durable orchestrator, PostgreSQL, Redis/queue, and same mock external services.",
+            "Run identical load generator with same random seed and input trace where feasible (e.g., replay same arrival and approval decision sequence).",
+            "Simulate human approvals against treatment's approval endpoint using same latency and decision trace.",
+            "Record same timestamp markers plus internal state transitions and retry counters from audit logs."
+          ]
+        }
+      }
+    },
+    {
+      "name": "resilience_under_partial_failures_workload",
+      "description": "Evaluate how well baseline vs. durable workflows handle transient and partial failures in downstream services and orchestrator restarts.",
+      "input_profile": {
+        "workflow_type": "customer_onboarding",
+        "concurrent_instances": [
+          50
+        ],
+        "arrival_pattern": "bursty: 50 workflows started over 5 minutes",
+        "failure_injection": [
+          {
+            "type": "external_service_outage",
+            "target_service": "account_provisioning_api",
+            "outage_window": "minutes 3\u20136 of run",
+            "behavior": "HTTP 500 responses with 30% timeout rate"
+          },
+          {
+            "type": "database_outage",
+            "target_service": "PostgreSQL (treatment only) or N/A (baseline has no DB)",
+            "outage_window": "single 60-second outage at minute 8",
+            "behavior": "refuse connections; recovery afterwards normal"
+          },
+          {
+            "type": "process_crash",
+            "target_service": "orchestrator",
+            "crash_time": "minute 10",
+            "behavior": "SIGKILL orchestrator container, restart after 60 seconds via Docker restart policy"
+          }
+        ],
+        "human_approval_behavior": {
+          "model": "as in normal_operation_workload",
+          "note": "During outages and crashes, approvals may still be sent (depending on system) but progression is blocked until recovery."
+        }
+      },
+      "execution_instructions": {
+        "baseline": {
+          "run_duration_minutes": 20,
+          "steps": [
+            "Start baseline orchestrator and mock services.",
+            "Begin starting workflows using bursty profile.",
+            "At minute 3, configure mock provisioning API to return failures per specified pattern until minute 6.",
+            "At minute 10, kill the baseline orchestrator process/container and restart after 60 seconds.",
+            "Track how many workflows fully complete, fail unrecovered, or are abandoned after crash.",
+            "Collect logs indicating errors and manual work required to reconcile any duplicate or partial provisioning actions."
+          ]
+        },
+        "treatment": {
+          "run_duration_minutes": 20,
+          "steps": [
+            "Start treatment stack with durable orchestrator, PostgreSQL, and mock services.",
+            "Begin same bursty workload with same random seed for input generation.",
+            "Inject identical provisioning API failure pattern between minutes 3\u20136.",
+            "At minute 8, briefly stop PostgreSQL for 60 seconds (simulate DB outage), then restart.",
+            "At minute 10, kill the orchestrator container and allow Docker to restart it after 60 seconds.",
+            "After run completes, query workflow store for completion states, retries, and compensations executed.",
+            "Verify that no workflow is permanently lost; incomplete ones remain in resumable states or have clear human_takeover markers."
+          ]
+        }
+      }
+    },
+    {
+      "name": "load_and_chaos_resilience_workload",
+      "description": "Stress-test both architectures under higher load combined with randomized chaos events to validate SLA adherence, failure containment, and auditability.",
+      "input_profile": {
+        "workflow_type": "customer_onboarding",
+        "concurrent_instances": [
+          100,
+          250,
+          500
+        ],
+        "arrival_pattern": "step function: ramp to target concurrency within 10 minutes, hold for 20 minutes",
+        "chaos_events": [
+          {
+            "type": "random_service_degradation",
+            "targets": [
+              "CRM_integration",
+              "email_service",
+              "document_generation_service"
+            ],
+            "frequency": "one target randomly selected every 5 minutes",
+            "behavior": "for selected target, increase latency by 5x and introduce 20% transient failure rate for 2 minutes"
+          },
+          {
+            "type": "random_worker_kill",
+            "targets": [
+              "background_worker_1",
+              "background_worker_2"
+            ],
+            "frequency": "kill a random worker every 10 minutes, let supervisor auto-restart after 1 minute"
+          }
+        ],
+        "human_approval_behavior": {
+          "model": "simulated queue of human approvers with limited capacity",
+          "max_parallel_approvals": 50,
+          "approval_latency_distribution_sec": {
+            "p50": 90,
+            "p90": 600,
+            "max": 1800
+          }
+        }
+      },
+      "execution_instructions": {
+        "baseline": {
+          "run_duration_minutes": 40,
+          "steps": [
+            "Deploy baseline stack scaled as much as possible (if supported) but maintaining same logical design.",
+            "Run load generator to reach target concurrency and maintain for 20 minutes.",
+            "Apply chaos events manually or via a simple chaos script affecting mock external services and worker processes (if applicable).",
+            "Measure throughput, error rate, and observed SLA violations for approval and overall completion time."
+          ]
+        },
+        "treatment": {
+          "run_duration_minutes": 40,
+          "steps": [
+            "Deploy treatment stack with multiple orchestrator and worker replicas if desired, all using shared PostgreSQL and Redis.",
+            "Run identical load generator pattern.",
+            "Use the same chaos script (with same random seed) to inject identical degradation patterns and worker kills.",
+            "Leverage built-in audit logs and metrics to evaluate the impact on completion rate, retries, and SLA adherence.",
+            "After the run, verify data consistency (no duplicated side-effects due to retries) via idempotency logs."
+          ]
+        }
+      }
+    }
+  ],
+  "controls": {
+    "llm_and_agent_configuration": {
+      "model": "same LLM model and version for baseline and treatment (e.g., gpt-4.x or equivalent local model)",
+      "temperature": 0.2,
+      "max_tokens": 512,
+      "tool_use_protocol": "identical tool schema and prompts; only orchestration/durability layer differs",
+      "agent_policies": "same business rules for approvals, thresholds, and routing across both conditions"
+    },
+    "external_services": {
+      "mock_services": [
+        "CRM API",
+        "Billing system API",
+        "Provisioning system API",
+        "Email/notification service"
+      ],
+      "behavior": "deterministic behavior for non-failure periods; chaos/failure periods controlled by single configuration shared across baseline and treatment runs.",
+      "idempotency_support": "external mocks can track idempotency keys; in baseline tests, idempotency support is turned off or ignored to reflect naive implementation."
+    },
+    "infrastructure": {
+      "hardware": "same VM/container resource class for baseline and treatment (e.g., 4 vCPU, 8GB RAM per orchestrator instance); identical underlying host or cloud environment",
+      "network": "runs performed in same network environment; network latency to mocks stable except when explicitly manipulated by chaos tooling",
+      "time_synchronization": "all services and load generators share synchronized clocks (e.g., via host time) for accurate SLA and latency measurement"
+    },
+    "randomness_and_seeding": {
+      "random_seeds": "fixed seeds used for workload generation (arrival times, data variations, approval decisions) per run level; same seeds reused across baseline/treatment pairs",
+      "repeat_runs": "at least 3 independent runs per workload and condition to estimate variability; seeds rotated but matched across conditions"
+    },
+    "configuration_parity": {
+      "business_rules": "same onboarding rules (e.g., ARR thresholds for additional approvals, provisioning variants) shared as a config file imported by both baseline and treatment code",
+      "SLA_targets": "same SLA thresholds for approval time and total completion time",
+      "logging_levels": "comparable log verbosity for fairness in overhead comparison (treatment may have additional structured logging by design, which is part of its cost)"
+    }
+  },
+  "metrics": [
+    {
+      "name": "workflow_completion_rate",
+      "unit": "percent_of_started_workflows",
+      "description": "Percentage of started workflows that reach a terminal completed state within the observation window."
+    },
+    {
+      "name": "unrecovered_failure_rate",
+      "unit": "percent_of_started_workflows",
+      "description": "Percentage of workflows that end in a failed state without successful completion or explicit human_takeover/compensation."
+    },
+    {
+      "name": "sla_breach_rate_overall",
+      "unit": "percent_of_completed_workflows",
+      "description": "Fraction of completed workflows whose total end-to-end latency exceeds the defined SLA (e.g., 2 hours)."
+    },
+    {
+      "name": "approval_sla_breach_rate",
+      "unit": "percent_of_approval_steps",
+      "description": "Fraction of approval steps where time from approval_request_issued to decision_recorded exceeds the approval SLA (e.g., 15 minutes), accounting for human availability."
+    },
+    {
+      "name": "median_workflow_latency",
+      "unit": "seconds",
+      "description": "Median (p50) time from workflow start to completion under normal_operation_workload; reported also at p90."
+    },
+    {
+      "name": "mean_retries_per_retryable_step",
+      "unit": "retries_per_step",
+      "description": "Average number of retry attempts for steps marked as retryable; measures efficiency of retry strategy under induced failures."
+    },
+    {
+      "name": "duplicate_side_effect_rate",
+      "unit": "percent_of_side_effecting_operations",
+      "description": "Proportion of operations that cause side effects in external systems (e.g., provisioning, ticket creation) that are executed more than once for the same logical workflow step."
+    },
+    {
+      "name": "manual_recovery_effort",
+      "unit": "simulated_human_minutes",
+      "description": "Estimated human operator time required post-run to inspect logs, identify inconsistent states, and reconcile or manually fix workflows; computed from number and type of recovery tasks generated."
+    },
+    {
+      "name": "in_flight_loss_rate_on_crash",
+      "unit": "percent_of_in_flight_workflows",
+      "description": "Fraction of workflows that were in non-terminal states at time of orchestrator crash and are never resumed or do not reach any terminal state afterwards."
+    },
+    {
+      "name": "audit_log_coverage",
+      "unit": "percent_of_significant_events_recorded",
+      "description": "Percentage of defined significant workflow events (state transitions, approvals, external calls, exceptions) that are present in the audit log according to evidence_schema."
+    },
+    {
+      "name": "orchestrator_cpu_utilization",
+      "unit": "percent_cpu",
+      "description": "Average CPU utilization of orchestrator processes during load tests; used to compare overhead of durability features."
+    },
+    {
+      "name": "orchestrator_memory_usage",
+      "unit": "megabytes",
+      "description": "Average and peak RAM usage of orchestrator processes during tests."
+    }
+  ],
+  "success_criteria": {
+    "primary": [
+      {
+        "metric": "unrecovered_failure_rate",
+        "target_relation": "treatment < baseline",
+        "target_value": "at least 50% relative reduction across resilience_under_partial_failures_workload and load_and_chaos_resilience_workload",
+        "rationale": "Core promise of durability is fewer unrecovered workflow failures under outages and crashes."
+      },
+      {
+        "metric": "in_flight_loss_rate_on_crash",
+        "target_relation": "treatment << baseline",
+        "target_value": "treatment \u2264 5% and at most one-third of baseline in_flight_loss_rate_on_crash",
+        "rationale": "Durable engine should preserve almost all in-flight workflows across orchestrator restarts."
+      },
+      {
+        "metric": "duplicate_side_effect_rate",
+        "target_relation": "treatment < baseline",
+        "target_value": "treatment \u2264 1% duplicate side effects and at most half of baseline rate under induced failures",
+        "rationale": "Idempotency in treatment should significantly reduce duplicate external actions despite retries."
+      }
+    ],
+    "secondary": [
+      {
+        "metric": "sla_breach_rate_overall",
+        "target_relation": "treatment <= baseline + 5 percentage_points",
+        "target_value": "treatment should not materially worsen SLA breaches under normal_operation_workload; ideally improves or stays within 5pp of baseline.",
+        "rationale": "Durability should not significantly degrade customer-facing SLAs in failure-free conditions."
+      },
+      {
+        "metric": "manual_recovery_effort",
+        "target_relation": "treatment < baseline",
+        "target_value": "at least 30% reduction in estimated manual recovery time after failure-inducing workloads.",
+        "rationale": "Better visibility and structured states should reduce human clean-up work."
+      },
+      {
+        "metric": "audit_log_coverage",
+        "target_relation": "treatment > baseline",
+        "target_value": "treatment \u2265 95% of significant events recorded; baseline unconstrained but likely < 70%.",
+        "rationale": "Treatment aims for compliance-ready, high-fidelity audit logs."
+      }
+    ],
+    "exploratory": [
+      {
+        "metric": "orchestrator_cpu_utilization",
+        "target_relation": "treatment may be higher",
+        "target_value": "observe overhead; document as trade-off rather than hard threshold.",
+        "rationale": "Durability and logging will consume more resources; quantify for planning."
+      },
+      {
+        "metric": "median_workflow_latency",
+        "target_relation": "treatment \u2248 baseline",
+        "target_value": "within \u00b110% under normal_operation_workload.",
+        "rationale": "Durability plumbing should not introduce large latency penalties."
+      }
+    ]
+  },
+  "failure_modes": [
+    {
+      "name": "hidden_inconsistent_state",
+      "description": "Workflow instances appear 'completed' but external side effects are only partially applied or mismatched, especially after retries and crashes.",
+      "detection": "Cross-check audit log events with external mock service logs using workflow_instance_id and idempotency_key; flag mismatches in evidence.",
+      "mitigation": "Enhance compensation steps, transaction boundaries, and idempotent operations; ensure treatment implementation ties terminal completion strictly to verified side-effect success."
+    },
+    {
+      "name": "retry_storm_or_thundering_herd",
+      "description": "Under service outages, both baseline and treatment may hammer recovering services with large numbers of concurrent retries, increasing latency and failure rates.",
+      "detection": "Spikes in mean_retries_per_retryable_step, 5xx rates, and external service CPU usage during outage windows.",
+      "mitigation": "Implement exponential backoff with jitter and global concurrency caps for retries in treatment; document baseline\u2019s naive behavior as a risk."
+    },
+    {
+      "name": "approval_deadlocks_or_stalled_workflows",
+      "description": "Workflows can get stuck in approval states that never time out or escalate if human is unavailable or if approval state handling is buggy.",
+      "detection": "Query workflows in 'pending_approval' state older than maximum allowed SLA; compare between conditions; check audit logs for missing timeout transitions.",
+      "mitigation": "Ensure approval states in treatment define mandatory timeout and escalation transitions; refine simulation of human behavior for realism."
+    },
+    {
+      "name": "audit_log_volume_and_cost_overhead",
+      "description": "High-volume structured logs can increase storage and compute costs, affecting feasibility at scale.",
+      "detection": "Monitor size_on_disk of audit tables and ingestion rate during load tests.",
+      "mitigation": "Consider log compaction, sampling, or tiered storage strategies; for experiment, note overhead explicitly as trade-off."
+    },
+    {
+      "name": "test_artifact_coupling",
+      "description": "Load generators or chaos injectors behave differently between baseline and treatment, confounding results.",
+      "detection": "Verify that request traces (timestamps, payloads, approval decisions) match across conditions via pre-generated scenario files and logs.",
+      "mitigation": "Generate input and chaos schedules ahead of time into deterministic trace files and replay them identically in both conditions."
+    },
+    {
+      "name": "database_as_single_point_of_failure",
+      "description": "Treatment centralizes state in PostgreSQL; misconfigured HA may cause longer outages than in-memory baseline.",
+      "detection": "Measure downtime impact in resilience tests; compare in_flight_loss_rate_on_crash and unrecovered_failure_rate during DB outage windows.",
+      "mitigation": "Configure DB with appropriate durability settings (fsync, WAL) and record that HA configuration is a dependency for production; scope the experiment to single-node Postgres but clearly note design implications."
+    }
+  ],
+  "required_environment": {
+    "hardware": {
+      "min_cpu_cores": 8,
+      "min_ram_gb": 16,
+      "disk_space_gb": 20,
+      "notes": "Can be a single developer workstation or a medium cloud VM; ensure sufficient CPU to simulate workloads without extreme contention."
+    },
+    "software": {
+      "os": "Linux (Ubuntu 22.04+ recommended) or macOS; Windows via WSL2 is acceptable.",
+      "runtime": "Python 3.10+",
+      "databases": [
+        "PostgreSQL 13+",
+        "Redis 6+ (for queues, if using Celery/RQ)"
+      ],
+      "containerization": [
+        "Docker 24+",
+        "Docker Compose v2+"
+      ],
+      "libraries": [
+        "FastAPI or Flask",
+        "Uvicorn or Gunicorn",
+        "SQLAlchemy",
+        "Alembic (for DB migrations)",
+        "Pydantic",
+        "Celery or RQ (if queue-based workers are used)",
+        "pytest (for automated verification scripts)",
+        "Locust or k6 (optional, for HTTP load generation) or custom Python load scripts"
+      ],
+      "llm_access": {
+        "type": "cloud_API_or_local_model",
+        "requirement": "Same LLM model and configuration for both baseline and treatment.",
+        "note": "For reproducibility without external dependencies, a stubbed LLM that returns deterministic or canned responses may be used; the experiment targets durability and workflow behavior, not language quality."
+      }
+    },
+    "repository_layout": {
+      "url": "https://github.com/bookauthority/turn-your-company-into-an-agentic-organization",
+      "expected_subdirectories": [
+        "experiments/ch7-durable-workflows/",
+        "experiments/ch7-durable-workflows/baseline/",
+        "experiments/ch7-durable-workflows/treatment/",
+        "experiments/ch7-durable-workflows/tools/",
+        "experiments/ch7-durable-workflows/config/",
+        "experiments/ch7-durable-workflows/results/"
+      ]
+    },
+    "security_and_data": {
+      "data_nature": "synthetic customer onboarding data only; no real PII required.",
+      "secrets_management": "Use environment variables or .env file for any API keys if real LLM or email services are used; sample .env.example provided.",
+      "compliance_note": "Even though data is synthetic, audit logging patterns are designed to be compatible with regulated environments (e.g., SOC2, ISO 27001)."
+    }
+  },
+  "run_instructions": {
+    "setup": [
+      "Clone the repository: git clone https://github.com/bookauthority/turn-your-company-into-an-agentic-organization.git",
+      "cd into experiment directory: cd experiments/ch7-durable-workflows",
+      "Copy configuration templates: cp config/.env.example config/.env and adjust if needed (e.g., LLM provider, ports).",
+      "Install Python dependencies: pip install -r requirements.txt",
+      "Ensure Docker and Docker Compose are installed and running."
+    ],
+    "baseline_deployment": [
+      "From experiments/ch7-durable-workflows/baseline, run: docker compose up --build",
+      "Wait until the baseline orchestrator and mock services report 'ready' in logs.",
+      "Initialize any necessary fixtures (e.g., pre-load mock services with static reference data) via: python tools/init_mocks.py --env baseline"
+    ],
+    "treatment_deployment": [
+      "From experiments/ch7-durable-workflows/treatment, run database migrations: alembic upgrade head",
+      "Start treatment stack: docker compose up --build",
+      "Verify that the workflow orchestrator, PostgreSQL, Redis, and worker containers are healthy.",
+      "Initialize mocks for treatment environment: python tools/init_mocks.py --env treatment"
+    ],
+    "workload_execution_general": [
+      "Use the shared workload driver script in experiments/ch7-durable-workflows/tools, e.g., python run_workload.py --scenario normal_operation --env baseline --seed 42",
+      "The driver should: read scenario configuration from config/scenarios/{scenario_name}.yaml, generate a deterministic schedule of workflow starts and approval events, and send HTTP requests to the baseline or treatment endpoints.",
+      "For each scenario, run at least 3 trials per environment with different seeds: e.g., seeds 42, 43, 44.",
+      "Store raw logs and metrics under results/{scenario_name}/{env}/run_{seed}/."
+    ],
+    "specific_steps_per_workload": {
+      "normal_operation_workload": [
+        "Run baseline: python tools/run_workload.py --scenario normal_operation --env baseline --seed 42 (repeat for seeds 43, 44).",
+        "Run treatment: python tools/run_workload.py --scenario normal_operation --env treatment --seed 42 (repeat).",
+        "Ensure no chaos or failure flags are enabled in config for this scenario."
+      ],
+      "resilience_under_partial_failures_workload": [
+        "Enable failure injection configuration in config/scenarios/resilience.yaml (external outage, DB outage, orchestrator crash).",
+        "Run baseline resilience scenario: python tools/run_workload.py --scenario resilience --env baseline --seed 101; follow on-screen prompts or automated script to trigger orchestrator crash at configured time.",
+        "Run treatment resilience scenario: python tools/run_workload.py --scenario resilience --env treatment --seed 101; script or docker-compose health hooks should stop/start DB and orchestrator at specified times.",
+        "Confirm via logs that outages and crashes occurred as scheduled."
+      ],
+      "load_and_chaos_resilience_workload": [
+        "Configure high-concurrency and chaos events in config/scenarios/load_chaos.yaml.",
+        "Run baseline load and chaos test: python tools/run_workload.py --scenario load_chaos --env baseline --seed 202.",
+        "Run treatment load and chaos test: python tools/run_workload.py --scenario load_chaos --env treatment --seed 202.",
+        "Optionally, use a dedicated load tool (e.g., Locust) integrated with the same scenario configuration for more realistic HTTP traffic patterns."
+      ]
+    },
+    "post_run_analysis": [
+      "After each run, execute the analysis script: python tools/analyze_results.py --input_dir results --output_dir results/summary.",
+      "The script should parse workflow state from DB (treatment) or in-memory snapshots/logs (baseline where possible), mock service logs, and orchestrator logs to compute defined metrics.",
+      "Generate summary JSON and CSV reports per scenario and environment, plus comparison tables baseline_vs_treatment for each metric.",
+      "Inspect outlier workflows and a sample of audit logs to qualitatively validate exception handling and approval flows.",
+      "Document any deviations from planned chaos schedules or workload intensity in a README within results/summary."
+    ]
+  },
+  "evidence_schema": {
+    "description": "Structured format for capturing experimental evidence, enabling reproducible comparison of baseline vs. treatment across workloads.",
+    "version": "1.0",
+    "artifacts": {
+      "run_metadata": {
+        "file_pattern": "results/{scenario}/{env}/run_{seed}/run_metadata.json",
+        "schema": {
+          "scenario_name": "string",
+          "environment": "string (baseline|treatment)",
+          "seed": "integer",
+          "start_time_utc": "ISO8601 datetime",
+          "end_time_utc": "ISO8601 datetime",
+          "code_version": "git_commit_hash or tag",
+          "config_files": [
+            "list of config filenames with checksums"
+          ],
+          "notes": "string (free-form notes on anomalies, manual interventions, etc.)"
+        }
+      },
+      "workflow_trace": {
+        "file_pattern": "results/{scenario}/{env}/run_{seed}/workflow_traces.jsonl",
+        "schema_per_line": {
+          "workflow_instance_id": "string (UUID or slug)",
+          "workflow_type": "string (e.g., customer_onboarding)",
+          "input_parameters_hash": "string (hash or ID of initial payload)",
+          "events": [
+            {
+              "timestamp_utc": "ISO8601 datetime",
+              "event_type": "string (state_entered|state_exited|tool_call|approval_requested|approval_decision|exception|retry_scheduled|retry_executed|compensation_executed|workflow_completed|workflow_failed|workflow_human_takeover)",
+              "state_name": "string or null",
+              "actor_type": "string (agent|human|system)",
+              "actor_id": "string or null",
+              "details": "object (event-specific data, e.g., error_class, approval_decision, retry_count)",
+              "correlation_id": "string (for external calls, matches mock service logs)"
+            }
+          ],
+          "terminal_status": "string (completed|failed|human_takeover|unknown)",
+          "start_time_utc": "ISO8601 datetime",
+          "end_time_utc": "ISO8601 datetime or null",
+          "sla_breached": "boolean",
+          "approval_sla_breached": "boolean"
+        }
+      },
+      "external_service_logs": {
+        "file_pattern": "results/{scenario}/{env}/run_{seed}/external_services/{service_name}.jsonl",
+        "schema_per_line": {
+          "timestamp_utc": "ISO8601 datetime",
+          "service_name": "string",
+          "request_id": "string",
+          "workflow_instance_id": "string or null",
+          "idempotency_key": "string or null",
+          "operation": "string (e.g., create_account, send_email)",
+          "request_payload_hash": "string",
+          "response_status": "integer (HTTP-like status code)",
+          "error_class": "string or null"
+        }
+      },
+      "metrics_summary": {
+        "file_pattern": "results/summary/{scenario}/metrics_{env}.json",
+        "schema": {
+          "scenario_name": "string",
+          "environment": "string",
+          "runs": [
+            {
+              "seed": "integer",
+              "metrics": {
+                "workflow_completion_rate": "number",
+                "unrecovered_failure_rate": "number",
+                "sla_breach_rate_overall": "number",
+                "approval_sla_breach_rate": "number",
+                "median_workflow_latency": "number",
+                "p90_workflow_latency": "number",
+                "mean_retries_per_retryable_step": "number",
+                "duplicate_side_effect_rate": "number",
+                "manual_recovery_effort": "number",
+                "in_flight_loss_rate_on_crash": "number",
+                "audit_log_coverage": "number",
+                "orchestrator_cpu_utilization": "number",
+                "orchestrator_memory_usage": "number"
+              }
+            }
+          ],
+          "aggregated": {
+            "metric_means": "object mapping metric_name -> mean_across_runs",
+            "metric_stddevs": "object mapping metric_name -> stddev_across_runs",
+            "n_runs": "integer"
+          }
+        }
+      },
+      "comparison_report": {
+        "file_pattern": "results/summary/{scenario}/comparison_baseline_vs_treatment.json",
+        "schema": {
+          "scenario_name": "string",
+          "metrics_compared": [
+            {
+              "metric_name": "string",
+              "baseline_mean": "number",
+              "baseline_stddev": "number",
+              "treatment_mean": "number",
+              "treatment_stddev": "number",
+              "relative_change": "number (treatment_mean / baseline_mean - 1, where meaningful)",
+              "meets_primary_success_criterion": "boolean or null",
+              "meets_secondary_success_criterion": "boolean or null"
+            }
+          ],
+          "notes": "string (interpretation guidance; no invented outcome values)."
+        }
+      }
+    }
+  }
+}

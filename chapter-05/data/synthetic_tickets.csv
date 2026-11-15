@@ -1,0 +1,11 @@
+ticket_id,created_at,customer_email,subject,body,category
+T001,2024-01-01T09:00:00Z,alice@example.com,Invoice copy,"Hi, can you send me a copy of my last invoice?",billing-simple
+T002,2024-01-01T09:05:00Z,bob@example.com,Plan status,"Hello, what plan am I on and when does it renew?",billing-simple
+T003,2024-01-01T09:10:00Z,charlie@example.com,Billing address change,"I need to update the billing address on my account.",billing-simple
+T004,2024-01-01T09:15:00Z,dan@example.com,Payment received,"Was my last payment received? I want to make sure my account is active.",billing-simple
+T005,2024-01-01T09:20:00Z,erin@example.com,Account status,"Is my subscription currently active and paid up?",account-info
+T006,2024-01-01T09:25:00Z,frank@example.com,Next invoice,"When will my next invoice be generated?",billing-simple
+T007,2024-01-01T09:30:00Z,grace@example.com,Plan change info,"Can you tell me the difference between the basic and pro plans?",billing-simple
+T008,2024-01-01T09:35:00Z,henry@example.com,Address info,"What address do you currently have on file for my billing?",billing-simple
+T009,2024-01-01T09:40:00Z,irene@example.com,Invoice history,"Could I get invoices for the last three months?",billing-simple
+T010,2024-01-01T09:45:00Z,jack@example.com,Next renewal,"When does my current subscription period end?",account-info

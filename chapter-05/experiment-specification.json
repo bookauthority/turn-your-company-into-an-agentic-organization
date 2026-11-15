@@ -1,0 +1,857 @@
+{
+  "experiment_id": "ch05-prod-agent-001-manual-vs-agentic",
+  "hypothesis": "For a well-scoped, low-risk support workflow (e.g., triaging and responding to low-complexity customer emails about billing or account status), a single production-grade agent integrated with the ticketing system and guarded by human-in-the-loop approvals will (a) reduce median handling time per request by at least 40%, (b) reduce direct handling labor cost per request by at least 30%, and (c) maintain or improve response quality (no statistically significant degradation in correctness or tone as assessed by blinded reviewers) relative to the current manual process.",
+  "baseline": {
+    "description": "Current-state manual processing of low-complexity customer support emails (e.g., billing questions, plan questions, address changes) performed by human agents using the production ticketing/CRM system.",
+    "process_definition": {
+      "entry_criteria": [
+        "Inbound request arrives via a monitored support email inbox (e.g., support@company.com) or web form.",
+        "The request is automatically or manually tagged as belonging to the selected starter workflow (e.g., 'billing-simple', 'account-update') based on simple rules (keyword filters) and does not require cross-team escalation.",
+        "The request is in the primary language supported by the support team (e.g., English)."
+      ],
+      "steps": [
+        "1. Human agent reads the inbound email or web form submission.",
+        "2. Human agent searches internal knowledge base / SOPs and, if needed, the CRM/billing system for the customer record.",
+        "3. Human agent determines the appropriate response, including any simple account lookups or updates permitted in this workflow.",
+        "4. Human agent composes a response email in the ticketing system, optionally using existing templates.",
+        "5. Human agent submits the response, resolves or updates ticket status, and logs relevant metadata (tags, category, resolution code)."
+      ],
+      "exit_criteria": [
+        "Customer has received a response via email or portal message.",
+        "Ticket is updated with resolution code and any relevant notes.",
+        "No additional human actions are required unless the customer replies again (which would create or reopen a ticket outside the primary measurement window)."
+      ]
+    },
+    "participants": {
+      "roles": [
+        "Frontline support agents (Tier 1 or equivalent).",
+        "Support team lead (responsible for quality sampling and baseline metrics collection)."
+      ],
+      "experience_requirements": [
+        "Agents participating in the baseline measurement must have at least 30 days of experience handling this workflow to avoid ramp-up bias."
+      ]
+    },
+    "measurement_window": {
+      "duration": "At least 2 full business weeks OR until a minimum of 200 qualifying tickets are processed, whichever is longer.",
+      "stability_conditions": [
+        "No major product releases, pricing changes, or policy changes that substantially alter the nature of incoming requests during the baseline period.",
+        "No significant staffing disruptions (e.g., more than 30% of shifts staffed by temporary workers unfamiliar with the process)."
+      ]
+    },
+    "instrumentation": {
+      "required_fields_per_ticket": [
+        "Unique ticket ID.",
+        "Creation timestamp.",
+        "First human response timestamp.",
+        "Agent ID.",
+        "Ticket category / tag indicating the starter workflow (e.g., 'billing-simple').",
+        "Resolution code (e.g., 'resolved-first-touch', 'needs-follow-up')."
+      ],
+      "optional_fields": [
+        "Customer satisfaction score (if available, e.g., post-ticket CSAT survey).",
+        "Internal quality review score (if existing QA program is in place)."
+      ]
+    },
+    "data_collection_method": {
+      "description": "Use ticketing system exports or API to retrieve raw ticket data for the defined measurement window, then filter by entry criteria to form the baseline dataset.",
+      "artifacts": [
+        "CSV/Parquet export of baseline tickets.",
+        "Anonymized sample of request/response texts (redacted PII) for quality evaluation.",
+        "Documentation of any filtering or cleaning logic used."
+      ]
+    }
+  },
+  "treatment": {
+    "description": "Single production-grade agent that triages and drafts responses for the same low-complexity customer support workflow, integrated with the ticketing/CRM system and subject to human-in-the-loop review before sending responses.",
+    "agent_design": {
+      "role_definition": "Customer Support Drafting Agent for simple billing and account-related inquiries. The agent reads incoming requests, retrieves necessary context (customer profile, subscription data, knowledge base articles), and proposes a structured resolution and response draft for human approval.",
+      "tools": [
+        {
+          "name": "ticketing_api",
+          "capabilities": [
+            "Read ticket metadata and full message text.",
+            "Update ticket fields (tags, status, assignee).",
+            "Attach internal notes."
+          ],
+          "constraints": [
+            "Agent cannot directly send external replies via this tool; it can only save drafts or internal notes."
+          ]
+        },
+        {
+          "name": "crm_billing_api",
+          "capabilities": [
+            "Lookup customer by email or account ID.",
+            "Read subscription status, invoices, and simple account attributes.",
+            "Read-only access only for this experiment; no write/update actions."
+          ]
+        },
+        {
+          "name": "kb_search_api",
+          "capabilities": [
+            "Retrieve relevant knowledge base articles or standard operating procedures based on query text."
+          ]
+        }
+      ],
+      "context_inputs": [
+        "Full text of customer request.",
+        "Relevant historical tickets for the customer (optional, limited to last N).",
+        "CRM/billing summary (read-only).",
+        "Top K knowledge base snippets/articles.",
+        "Current policy constraints for this workflow (e.g., maximum allowed credit, data you may not expose)."
+      ],
+      "structured_output_schema": {
+        "type": "object",
+        "required": [
+          "classification",
+          "resolution_plan",
+          "response_draft",
+          "tool_actions",
+          "confidence"
+        ],
+        "properties": {
+          "classification": {
+            "type": "object",
+            "required": [
+              "category",
+              "sub_category",
+              "requires_handover"
+            ],
+            "properties": {
+              "category": {
+                "type": "string",
+                "enum": [
+                  "billing-question",
+                  "invoice-copy-request",
+                  "plan-change-info",
+                  "address-update-info",
+                  "account-status-info",
+                  "out-of-scope"
+                ]
+              },
+              "sub_category": {
+                "type": "string"
+              },
+              "requires_handover": {
+                "type": "boolean",
+                "description": "True if the agent determines that this request is outside its allowed workflow scope."
+              }
+            }
+          },
+          "resolution_plan": {
+            "type": "string",
+            "description": "Short natural language explanation of what information was used and what resolution is proposed."
+          },
+          "response_draft": {
+            "type": "string",
+            "description": "Customer-facing email body draft, following tone and policy guidelines."
+          },
+          "tool_actions": {
+            "type": "array",
+            "description": "List of suggested non-destructive tool calls (e.g., KB links to attach, internal note suggestions). In this experiment, actual state-changing tool calls in production systems are disabled or stubbed.",
+            "items": {
+              "type": "object",
+              "required": [
+                "tool_name",
+                "action_type",
+                "arguments"
+              ],
+              "properties": {
+                "tool_name": {
+                  "type": "string"
+                },
+                "action_type": {
+                  "type": "string"
+                },
+                "arguments": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Agent's self-reported confidence in the proposed resolution."
+          }
+        }
+      }
+    },
+    "human_in_the_loop_design": {
+      "review_modes": [
+        "approve_as_is",
+        "edit_then_approve",
+        "reject_and_handle_manually",
+        "redirect_out_of_scope"
+      ],
+      "review_ui_requirements": [
+        "Display original customer request.",
+        "Display agent resolution_plan and response_draft.",
+        "Highlight any KB articles used.",
+        "Show agent confidence score.",
+        "Provide text editor for modifying response_draft.",
+        "Buttons for the four review modes, with required reason on reject/redirect."
+      ],
+      "approval_policy": [
+        "All agent-generated responses in the experimental cohort must be explicitly approved by a human before being sent to customers.",
+        "If the human chooses 'reject_and_handle_manually' or 'redirect_out_of_scope', the agent's draft is not sent; the human composes and sends a new reply.",
+        "If the human materially edits the response (e.g., more than a configurable character threshold), this is recorded in the experiment log."
+      ]
+    },
+    "deployment_pattern": {
+      "topology": "shadow and partial-assist deployment.",
+      "phases": [
+        {
+          "name": "Shadow Mode (Optional but Recommended)",
+          "description": "Agent runs in the background and generates drafts that are not visible to the support agent. Used to validate correctness offline.",
+          "duration": "At least 100 tickets or 3 business days for sanity checks."
+        },
+        {
+          "name": "Assist Mode (Primary Experimental Phase)",
+          "description": "Agent-generated drafts are presented to support agents who must review, edit if necessary, and approve or reject.",
+          "traffic_allocation": "At least 50% of eligible tickets routed to agent-assisted lane; remaining eligible tickets handled manually as concurrent control if possible."
+        }
+      ]
+    },
+    "instrumentation": {
+      "required_fields_per_ticket": [
+        "Unique ticket ID.",
+        "Flag: agentic_lane (boolean).",
+        "Agent request timestamp (when agent is invoked for drafting).",
+        "Agent response timestamp (when structured output is returned).",
+        "Human first-view timestamp (when a support agent sees the draft).",
+        "Human approval/rejection timestamp.",
+        "Review mode selected (approve_as_is, edit_then_approve, reject_and_handle_manually, redirect_out_of_scope).",
+        "Edit distance or a proxy metric between agent response_draft and final sent response.",
+        "Any human comments/labels about agent errors (optional, for richer diagnostics)."
+      ],
+      "logging_requirements": [
+        "Persist full structured output from agent (with PII redacted for analysis logs).",
+        "Persist snapshot of context inputs passed to agent (ticket text, KB snippets metadata, CRM summary), with sensitive data either removed or tokenized.",
+        "Record model configuration (model name, version, temperature, tool config) per invocation."
+      ]
+    }
+  },
+  "workloads": [
+    {
+      "name": "Low-Complexity Billing and Account Inquiries",
+      "description": "Customer emails or tickets asking for simple billing and account information that can be answered using read-only access to CRM/billing data and standard policies.",
+      "examples": [
+        "\u201cCan you send me a copy of my last invoice?\u201d",
+        "\u201cWhat plan am I currently on and when does my subscription renew?\u201d",
+        "\u201cI need to update the billing address on my account.\u201d",
+        "\u201cWas my last payment received? I want to make sure my account is active.\u201d"
+      ],
+      "inclusion_criteria": [
+        "Tickets tagged by existing rules or simple heuristics as belonging to 'billing-simple' or 'account-info' categories.",
+        "No evidence of complex dispute, refund, or fraud investigation in the request.",
+        "Single-customer context (no multi-account or complex organizational hierarchies needed)."
+      ],
+      "exclusion_criteria": [
+        "Requests involving refunds, discounts, credits, or pricing negotiations.",
+        "Requests indicating legal action, complaints, or escalations.",
+        "Requests requiring changes in backend billing data in this initial experiment (read-only integrations only)."
+      ],
+      "input_standardization": {
+        "normalization_steps": [
+          "Strip signatures and legal footers where feasible using heuristic rules.",
+          "Retain original spelling and grammar errors.",
+          "Preserve timestamps and threading metadata but pass only the most recent customer message to the agent by default, with prior context available as needed."
+        ]
+      }
+    }
+  ],
+  "controls": {
+    "randomization": {
+      "unit_of_randomization": "ticket",
+      "method": "For each eligible incoming ticket, randomly assign to baseline_manual or treatment_agentic lane with a fixed probability (e.g., 50/50), subject to capacity constraints.",
+      "implementation_notes": [
+        "Randomization can be implemented as a stateless hash on ticket ID modulo 2, or via a simple random number generator at routing time.",
+        "Ensure that the same customer is not systematically biased to one lane by seeding randomization with ticket ID, not customer ID."
+      ]
+    },
+    "concurrency": {
+      "description": "Where possible, operate baseline and treatment concurrently to avoid time-based confounds (e.g., seasonal ticket volume, policy changes).",
+      "fallback": "If concurrent operation is not possible, collect baseline and treatment sequentially under documented, comparable conditions, and avoid overlapping with major events (e.g., new feature launches)."
+    },
+    "agent_configuration_lock": {
+      "description": "Lock key agent parameters during the core experimental window.",
+      "locked_parameters": [
+        "LLM model name and version.",
+        "Temperature and decoding parameters.",
+        "Prompt templates for system and agent instructions.",
+        "Tool availability and schemas."
+      ],
+      "change_management": [
+        "Any mid-experiment changes to prompts, tools, or model versions must be recorded with timestamps and used to define pre-change and post-change segments.",
+        "Primary analysis should focus on periods with stable configuration."
+      ]
+    },
+    "human_behavior_controls": {
+      "instructions_to_agents": [
+        "Manual-lane support staff should follow existing SOPs and not adopt agent-like drafting behaviors introduced solely for the experiment.",
+        "Agentic-lane support staff should be instructed to use the agent drafts but are free to edit or reject based on their judgment.",
+        "Staff should not preferentially route easier or harder tickets to one lane outside the randomized assignment."
+      ],
+      "training": [
+        "Provide a short, standardized training for all participating support agents on how to interact with the agent interface, including when to reject drafts.",
+        "Document training materials and attendance to ensure consistent instruction."
+      ]
+    },
+    "data_privacy_and_safety": {
+      "pii_handling": [
+        "Production systems will still handle PII as usual; for analysis and repository examples, all PII must be redacted or synthetic.",
+        "Logs exported for analysis must replace any direct identifiers (names, emails, account IDs) with consistent pseudonyms or hashes."
+      ],
+      "scope_limits": [
+        "Agent has read-only access to CRM/billing APIs in this experiment; no write operations to financial systems.",
+        "Agent cannot directly send external communications; only drafts that humans may approve and send."
+      ]
+    }
+  },
+  "metrics": [
+    {
+      "name": "handling_time_first_response",
+      "unit": "seconds",
+      "definition": "Time from ticket creation to first meaningful response sent to the customer (manual lane) or approved agent draft sent to the customer (agentic lane)."
+    },
+    {
+      "name": "agent_draft_latency",
+      "unit": "seconds",
+      "definition": "Time from agent request timestamp to agent structured output being available. Only applicable to agentic lane."
+    },
+    {
+      "name": "labor_time_per_ticket",
+      "unit": "seconds",
+      "definition": "Estimated total human working time per ticket. For manual lane, approximated by time window between agent opening ticket and resolving it, adjusted by concurrency assumptions; for agentic lane, measured as review and editing time plus any manual actions."
+    },
+    {
+      "name": "labor_cost_per_ticket",
+      "unit": "currency/ticket",
+      "definition": "Labor_time_per_ticket multiplied by fully-loaded hourly cost of support agents, divided by 3600."
+    },
+    {
+      "name": "model_cost_per_ticket",
+      "unit": "currency/ticket",
+      "definition": "Estimated LLM and associated API costs per ticket in the agentic lane, based on token usage and provider pricing."
+    },
+    {
+      "name": "total_variable_cost_per_ticket",
+      "unit": "currency/ticket",
+      "definition": "Sum of labor_cost_per_ticket and model_cost_per_ticket. For baseline/manual, model_cost_per_ticket is zero."
+    },
+    {
+      "name": "first_touch_resolution_rate",
+      "unit": "percentage",
+      "definition": "Percentage of tickets resolved with a single customer interaction (no follow-up from customer within a defined window, e.g., 48 hours).",
+      "window": "48 hours after first response."
+    },
+    {
+      "name": "csat_score",
+      "unit": "score (0\u2013100 or 1\u20135, depending on existing system)",
+      "definition": "Average post-interaction customer satisfaction score for tickets in the experiment, where available."
+    },
+    {
+      "name": "qa_correctness_score",
+      "unit": "score (0\u20131)",
+      "definition": "Blinded reviewer judgment of factual and policy correctness of the response for a stratified random sample of tickets.",
+      "scale": [
+        "1.0 = correct, fully compliant.",
+        "0.5 = partially correct or minor issues, but overall acceptable.",
+        "0.0 = incorrect or policy-violating; would need rework."
+      ]
+    },
+    {
+      "name": "qa_tone_score",
+      "unit": "score (0\u20131)",
+      "definition": "Blinded reviewer assessment that the tone meets company guidelines for professionalism and empathy, using the same 0/0.5/1 scale as correctness."
+    },
+    {
+      "name": "agent_draft_accept_rate",
+      "unit": "percentage",
+      "definition": "Percentage of agent-generated drafts that are approved_as_is or edit_then_approve (vs. reject_and_handle_manually or redirect_out_of_scope)."
+    },
+    {
+      "name": "agent_draft_minor_edit_rate",
+      "unit": "percentage",
+      "definition": "Percentage of approved drafts where the human edit distance stays below a defined threshold (e.g., <20% of characters changed), indicating near-ready quality."
+    },
+    {
+      "name": "out_of_scope_rate",
+      "unit": "percentage",
+      "definition": "Fraction of tickets initially routed to the agentic lane that end up redirected_out_of_scope or requiring manual takeover."
+    },
+    {
+      "name": "error_incident_count",
+      "unit": "count",
+      "definition": "Number of documented incidents where the agent draft, if not corrected by humans, would have caused a materially incorrect or policy-breaching response, as flagged by reviewers or agents."
+    }
+  ],
+  "success_criteria": {
+    "primary": [
+      {
+        "metric": "handling_time_first_response",
+        "comparison": "treatment_vs_baseline",
+        "target": "Median handling_time_first_response in the agentic lane is at least 40% lower than in the manual lane.",
+        "formal_test": "Mann-Whitney U test on ticket-level handling_time_first_response; p < 0.05 for difference in distributions in the desired direction."
+      },
+      {
+        "metric": "total_variable_cost_per_ticket",
+        "comparison": "treatment_vs_baseline",
+        "target": "Mean total_variable_cost_per_ticket in the agentic lane is at least 30% lower than in the manual lane.",
+        "formal_test": "Two-sample t-test (or non-parametric bootstrap) on mean costs; p < 0.05."
+      },
+      {
+        "metric": "qa_correctness_score",
+        "comparison": "treatment_vs_baseline",
+        "target": "No statistically significant decrease in qa_correctness_score for agentic responses versus manual, within a margin of -0.05 on a 0\u20131 scale.",
+        "formal_test": "Equivalence test (TOST) with lower bound = -0.05, upper bound = +0.05; p < 0.05 for equivalence."
+      }
+    ],
+    "secondary": [
+      {
+        "metric": "qa_tone_score",
+        "target": "No statistically significant degradation; ideally improvement.",
+        "analysis": "Descriptive statistics plus equivalence or non-inferiority test with margin -0.05."
+      },
+      {
+        "metric": "agent_draft_accept_rate",
+        "target": "At least 70% of agent drafts are accepted (approve_as_is or edit_then_approve)."
+      },
+      {
+        "metric": "agent_draft_minor_edit_rate",
+        "target": "At least 40% of approved drafts require only minor edits (<20% of characters changed)."
+      },
+      {
+        "metric": "error_incident_count",
+        "target": "No more than a small, predefined tolerance (e.g., < 1% of tickets in agentic lane have serious potential errors not caught by reviewers)."
+      }
+    ],
+    "stopping_rules": [
+      "If during the experiment more than N serious potential incidents (e.g., policy violations, security breaches) are identified over M tickets (e.g., > 3 over 200 tickets), pause the experiment and perform a safety review.",
+      "If qa_correctness_score in agentic lane falls below manual lane by more than 0.1 (absolute) in interim checks, temporarily halt new ticket routing to agentic lane and investigate."
+    ]
+  },
+  "failure_modes": [
+    {
+      "name": "Scope Creep and Misclassification",
+      "description": "Tickets outside the intended low-risk workflow are routed to the agent, leading to poor drafts or escalations.",
+      "indicators": [
+        "Increased out_of_scope_rate.",
+        "Support agents frequently choosing redirect_out_of_scope.",
+        "Qualitative feedback that many drafts are irrelevant."
+      ],
+      "mitigations": [
+        "Tighten routing rules to the starter workflow.",
+        "Refine system prompt to more aggressively decline uncertain requests.",
+        "Introduce a preliminary classifier (simple rules or ML model) as a gatekeeper."
+      ]
+    },
+    {
+      "name": "Quality Drift Over Time",
+      "description": "Agent performance changes due to upstream model updates, KB changes, or silent prompt edits.",
+      "indicators": [
+        "Week-over-week degradation in qa_correctness_score or agent_draft_accept_rate.",
+        "Sudden spikes in error_incident_count."
+      ],
+      "mitigations": [
+        "Version and lock models/prompts for the duration of the main measurement period.",
+        "Add automated regression checks on a fixed evaluation set after any change in upstream dependencies."
+      ]
+    },
+    {
+      "name": "Human Over-Editing or Over-Reliance",
+      "description": "Some agents heavily edit every draft (eliminating time savings), while others over-trust drafts without sufficient review.",
+      "indicators": [
+        "Bimodal distribution in edit distances per reviewer.",
+        "Inconsistent qa scores across different human reviewers."
+      ],
+      "mitigations": [
+        "Standardize guidance on acceptable edits and review rigor.",
+        "Provide reviewer-level analytics and feedback.",
+        "Run calibration sessions where reviewers score sample drafts together."
+      ]
+    },
+    {
+      "name": "Biased Sampling or Non-Comparable Cohorts",
+      "description": "Manual and agentic lanes serve systematically different kinds of tickets, invalidating comparisons.",
+      "indicators": [
+        "Different distributions of ticket sub-categories or customer segments across lanes.",
+        "Different times-of-day or days-of-week patterns per lane."
+      ],
+      "mitigations": [
+        "Use randomized assignment at ticket level.",
+        "Weight results or stratify analyses by ticket type and time window.",
+        "If manual routing overrides occur, log them and analyze impact."
+      ]
+    },
+    {
+      "name": "Instrumentation Gaps",
+      "description": "Missing or inaccurate timestamps, IDs, or flags make it impossible to compute key metrics reliably.",
+      "indicators": [
+        "Null or inconsistent values for experiment flags in exports.",
+        "Mismatch between ticket counts in source system and analysis dataset."
+      ],
+      "mitigations": [
+        "Run dry-runs and validation queries before starting full experiment.",
+        "Implement schema validation checks on logs (e.g., required fields not null).",
+        "Automate daily sanity checks on metric aggregates."
+      ]
+    }
+  ],
+  "required_environment": {
+    "systems": [
+      "Ticketing or helpdesk platform with API access (e.g., Zendesk, Freshdesk, ServiceNow, or similar).",
+      "CRM/billing system with read-only API access for relevant customer and subscription fields.",
+      "Knowledge base or documentation repository with search API or export capability.",
+      "LLM provider or in-house model endpoint capable of running the agent prompts and tools.",
+      "Logging and analytics stack (e.g., data warehouse, log aggregation, metrics dashboard) to store and analyze experiment data."
+    ],
+    "access_and_permissions": [
+      "Service account(s) for ticketing and CRM systems with least-privilege, read-only permissions for this experiment.",
+      "Credentials and network access for the LLM endpoint.",
+      "Permissions for the experiment team to create dashboards and export anonymized data for analysis."
+    ],
+    "datasets": [
+      "Historical tickets dataset for baseline measurement and for designing prompts and evaluation samples (with PII redacted for repository examples).",
+      "Synthetic or sanitized ticket/response pairs to be included in the public GitHub repository for reproducibility."
+    ],
+    "repository_layout": {
+      "url": "https://github.com/bookauthority/turn-your-company-into-an-agentic-organization",
+      "proposed_structure": [
+        "experiments/ch05_first_production_agent/README.md",
+        "experiments/ch05_first_production_agent/config/agent_config.yaml",
+        "experiments/ch05_first_production_agent/config/routing_config.yaml",
+        "experiments/ch05_first_production_agent/src/agent.py",
+        "experiments/ch05_first_production_agent/src/tools/ticketing_client.py",
+        "experiments/ch05_first_production_agent/src/tools/crm_client.py",
+        "experiments/ch05_first_production_agent/src/tools/kb_client.py",
+        "experiments/ch05_first_production_agent/src/hitl_ui_stub.py",
+        "experiments/ch05_first_production_agent/notebooks/analysis.ipynb",
+        "experiments/ch05_first_production_agent/data/synthetic_tickets.csv",
+        "experiments/ch05_first_production_agent/data/synthetic_logs.parquet",
+        "experiments/shared/evaluation/qa_guidelines.md"
+      ]
+    },
+    "synthetic_environment": {
+      "description": "For readers without access to production systems, a local/sandbox setup mimicking the workflow using synthetic tickets and stubbed APIs.",
+      "components": [
+        "SQLite or local JSON files emulating ticketing, CRM, and KB data.",
+        "Python FastAPI or Flask app simulating the agent endpoint and HITL interface.",
+        "Docker compose file to spin up all necessary services locally."
+      ]
+    }
+  },
+  "run_instructions": [
+    {
+      "step": 1,
+      "title": "Select and Document the Starter Workflow",
+      "actions": [
+        "Choose a low-risk, high-volume, low-complexity support workflow (e.g., simple billing/account inquiries) following criteria in section 5.1.",
+        "Document entry/exit criteria and SOPs in a concise process spec file (e.g., experiments/ch05_first_production_agent/docs/workflow_spec.md).",
+        "Identify and tag historical tickets matching this workflow for baseline analysis."
+      ]
+    },
+    {
+      "step": 2,
+      "title": "Collect Baseline Data",
+      "actions": [
+        "Export at least 200 historical tickets satisfying the workflow criteria with timestamps, agent IDs, and resolution codes.",
+        "Compute baseline metrics (handling_time_first_response, labor_time_per_ticket if possible, first_touch_resolution_rate, csat_score if available).",
+        "Optionally, run a small QA review of 30\u201350 baseline tickets to estimate qa_correctness_score and qa_tone_score under the current manual process."
+      ]
+    },
+    {
+      "step": 3,
+      "title": "Implement the Agent with Tools and Structured Outputs",
+      "actions": [
+        "Implement agent.py using the specified structured_output_schema and tool interfaces from tools/*.py.",
+        "Define system and developer prompts embedding the workflow scope, safety constraints, and formatting requirements.",
+        "Test the agent offline on synthetic_tickets.csv to ensure it returns valid JSON outputs and plausible drafts."
+      ]
+    },
+    {
+      "step": 4,
+      "title": "Integrate with Ticketing and CRM Systems (or Stubs)",
+      "actions": [
+        "Implement ticketing_client.py, crm_client.py, and kb_client.py with real API calls in production, or stubbed functions in the synthetic environment.",
+        "Ensure that in this experiment, CRM/billing API calls are read-only.",
+        "Create a routing script or webhook handler that invokes the agent when new eligible tickets are created."
+      ]
+    },
+    {
+      "step": 5,
+      "title": "Deploy Human-in-the-Loop Review Flow",
+      "actions": [
+        "Implement hitl_ui_stub.py or integrate with your existing support console to display agent drafts alongside original tickets.",
+        "Add controls for approve_as_is, edit_then_approve, reject_and_handle_manually, redirect_out_of_scope, and capture the selected mode.",
+        "Train participating support agents on how to use the new interface and codify when to reject drafts (e.g., low confidence, out-of-scope, unclear answer)."
+      ]
+    },
+    {
+      "step": 6,
+      "title": "Set Up Logging, Observability, and Metrics",
+      "actions": [
+        "Ensure every ticket processed in either lane includes the required instrumentation fields (timestamps, lane flag, review mode, edit distance).",
+        "Configure logging to write structured JSON or Parquet logs to a centralized store.",
+        "Create a simple dashboard or notebook-based report to visualize key metrics daily (e.g., handling time distributions, accept rates)."
+      ]
+    },
+    {
+      "step": 7,
+      "title": "Run Shadow Mode (Optional Validation)",
+      "actions": [
+        "For the first 100\u2013200 tickets, run the agent in shadow mode where drafts are not shown to support agents.",
+        "Randomly sample at least 50 shadow-mode tickets and have QA reviewers compare agent drafts against the actual manual responses.",
+        "If qa_correctness_score or qa_tone_score is substantially worse than manual (>0.1 difference), refine prompts/tools before moving to assist mode."
+      ]
+    },
+    {
+      "step": 8,
+      "title": "Run the Main Experiment (Assist Mode)",
+      "actions": [
+        "Activate the assist mode where randomly selected eligible tickets are routed to the agentic lane.",
+        "Run the experiment for at least 2 weeks or until at least 200 tickets per lane are collected.",
+        "Monitor safety indicators daily (error_incident_count, severe QA flags) and apply stopping rules if necessary."
+      ]
+    },
+    {
+      "step": 9,
+      "title": "Sample and Evaluate Quality Blinded",
+      "actions": [
+        "From each lane, randomly sample at least 50 tickets (or more if feasible).",
+        "Strip lane identifiers and present paired request/response to blinded reviewers following qa_guidelines.md.",
+        "Compute qa_correctness_score and qa_tone_score per lane and reviewer, then aggregate."
+      ]
+    },
+    {
+      "step": 10,
+      "title": "Analyze Results and Compare Manual vs. Agentic Performance",
+      "actions": [
+        "Use analysis.ipynb or equivalent script to compute all defined metrics for both lanes.",
+        "Apply the statistical tests described in success_criteria where possible.",
+        "Summarize findings in a short report (e.g., experiments/ch05_first_production_agent/results/summary.md) including metric tables, charts, and interpretation relative to the hypothesis."
+      ]
+    },
+    {
+      "step": 11,
+      "title": "Decide on Next Steps and Productionization",
+      "actions": [
+        "If success_criteria are met and failure_modes are within tolerances, plan to expand agent coverage (more tickets, more categories) and/or relax read-only constraints with appropriate safeguards.",
+        "If criteria are partially met (e.g., quality OK but cost savings low), identify bottlenecks (e.g., excessive human editing) and design follow-up experiments (prompt tuning, better tools, improved UI).",
+        "Document lessons learned and update organizational guidelines for designing additional production-ready agents."
+      ]
+    }
+  ],
+  "evidence_schema": {
+    "ticket_record": {
+      "type": "object",
+      "required": [
+        "ticket_id",
+        "lane",
+        "created_at",
+        "first_response_at",
+        "agent_id",
+        "category",
+        "resolution_code"
+      ],
+      "properties": {
+        "ticket_id": {
+          "type": "string"
+        },
+        "lane": {
+          "type": "string",
+          "enum": [
+            "manual_baseline",
+            "agentic_treatment"
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "first_response_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "agent_id": {
+          "type": "string",
+          "description": "Identifier of the human support agent handling the ticket."
+        },
+        "category": {
+          "type": "string",
+          "description": "High-level workflow tag (e.g., 'billing-simple')."
+        },
+        "sub_category": {
+          "type": "string"
+        },
+        "resolution_code": {
+          "type": "string",
+          "description": "Outcome of the ticket (e.g., 'resolved_first_touch', 'escalated')."
+        },
+        "csat_score": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "agent_interaction_record": {
+      "type": "object",
+      "required": [
+        "ticket_id",
+        "agent_request_at",
+        "agent_response_at",
+        "agent_output",
+        "review_mode"
+      ],
+      "properties": {
+        "ticket_id": {
+          "type": "string"
+        },
+        "agent_request_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "agent_response_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "model_version": {
+          "type": "string"
+        },
+        "prompt_version": {
+          "type": "string"
+        },
+        "agent_output": {
+          "type": "object",
+          "description": "Structured output as defined in treatment.agent_design.structured_output_schema."
+        },
+        "review_mode": {
+          "type": "string",
+          "enum": [
+            "not_applicable",
+            "approve_as_is",
+            "edit_then_approve",
+            "reject_and_handle_manually",
+            "redirect_out_of_scope"
+          ]
+        },
+        "edit_distance_characters": {
+          "type": "number",
+          "description": "Levenshtein distance between agent response_draft and final sent response."
+        },
+        "edit_distance_ratio": {
+          "type": "number",
+          "description": "Normalized edit distance (0\u20131), where 0 means no change and 1 means completely different."
+        },
+        "human_comments": {
+          "type": "string",
+          "description": "Optional free-text comments by the reviewer about the draft."
+        }
+      }
+    },
+    "qa_evaluation_record": {
+      "type": "object",
+      "required": [
+        "evaluation_id",
+        "ticket_id",
+        "lane",
+        "reviewer_id",
+        "qa_correctness_score",
+        "qa_tone_score"
+      ],
+      "properties": {
+        "evaluation_id": {
+          "type": "string"
+        },
+        "ticket_id": {
+          "type": "string"
+        },
+        "lane": {
+          "type": "string",
+          "enum": [
+            "manual_baseline",
+            "agentic_treatment"
+          ]
+        },
+        "reviewer_id": {
+          "type": "string"
+        },
+        "qa_correctness_score": {
+          "type": "number",
+          "enum": [
+            0,
+            0.5,
+            1
+          ]
+        },
+        "qa_tone_score": {
+          "type": "number",
+          "enum": [
+            0,
+            0.5,
+            1
+          ]
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "config_record": {
+      "type": "object",
+      "required": [
+        "experiment_id",
+        "start_at",
+        "end_at",
+        "model_name",
+        "model_params",
+        "tools_enabled",
+        "routing_rule_version"
+      ],
+      "properties": {
+        "experiment_id": {
+          "type": "string"
+        },
+        "start_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "end_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "model_name": {
+          "type": "string"
+        },
+        "model_params": {
+          "type": "object",
+          "description": "Model configuration such as temperature, max_tokens, etc."
+        },
+        "tools_enabled": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "routing_rule_version": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "storage_and_format": {
+      "description": "All evidence should be storable as newline-delimited JSON (NDJSON) or Parquet files with schemas matching the objects above.",
+      "files": [
+        "logs/tickets.ndjson or tickets.parquet containing ticket_record entries.",
+        "logs/agent_interactions.ndjson or agent_interactions.parquet containing agent_interaction_record entries.",
+        "logs/qa_evaluations.ndjson or qa_evaluations.parquet containing qa_evaluation_record entries.",
+        "logs/experiment_config.json containing a single config_record."
+      ]
+    }
+  }
+}

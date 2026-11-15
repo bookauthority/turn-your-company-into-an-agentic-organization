@@ -1,0 +1,11 @@
+routing:
+  randomization_unit: ticket
+  baseline_probability: 0.5
+  treatment_probability: 0.5
+  # In code we implement this as a deterministic hash split on ticket_id.
+workloads:
+  - id: low_complexity_billing_account_inquiries
+    name: Low-Complexity Billing and Account Inquiries
+    tag_inclusion:
+      - billing-simple
+      - account-info

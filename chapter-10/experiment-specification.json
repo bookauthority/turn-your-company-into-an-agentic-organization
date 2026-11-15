@@ -1,0 +1,1266 @@
+{
+  "experiment_id": "exp-ch10-finance-ap-procurement-v1",
+  "hypothesis": "In a mid-market B2B company, an AI-agent-assisted Accounts Payable and Procurement workflow\u2014with strict tools, schemas, approval chains, and audit logging\u2014can (a) increase document-level accuracy in invoice-to-PO matching and coding to at least the current manual baseline, (b) reduce median processing latency per invoice and PO request by at least 40%, and (c) keep exception and escalation rates within an agreed control envelope (\u2264 10% absolute increase over baseline), while preserving segregation of duties and full auditability.",
+  "baseline": {
+    "description": "Current-state, human-only finance and procurement workflows for invoice processing, PO creation, reconciliations, and spend analysis, executed using email, shared drives, and a simulated ERP/AP system without AI assistance.",
+    "workflows": [
+      {
+        "name": "baseline_invoice_processing",
+        "description": "Human AP clerk processes vendor invoices from a shared inbox and document repository, manually extracts header and line-item data, matches to existing POs in the ERP/AP sandbox, flags discrepancies, routes invoices for approval based on a pre-defined approval matrix, and posts approved invoices to the ERP/AP system.",
+        "steps": [
+          "1. Retrieve a batch of invoices from the 'invoices_incoming' folder (PDF or image).",
+          "2. Manually read each invoice and type header fields (vendor, invoice number, date, amount, currency, payment terms) into the ERP/AP sandbox UI or a structured spreadsheet.",
+          "3. Perform a manual 2- or 3-way match against open POs and/or GRNs (goods receipt notes) in the ERP/AP sandbox.",
+          "4. Identify discrepancies (amount, quantity, missing PO, unknown vendor) and apply documented standard operating procedures (SOPs) to resolve or escalate.",
+          "5. Route invoices requiring approval via email or a basic workflow tool according to a static approval matrix (based on department, cost center, and amount thresholds).",
+          "6. Once approvals are confirmed, post the invoice in the ERP/AP sandbox and update invoice status.",
+          "7. Manually log processing completion time and any exceptions in a tracking sheet."
+        ]
+      },
+      {
+        "name": "baseline_po_creation",
+        "description": "Human requester and procurement analyst create and approve purchase orders manually based on purchase requests submitted by email or form, ensuring compliance with supplier, budget, and approval policies.",
+        "steps": [
+          "1. Receive purchase request details via email or web form (description, quantity, budget code, preferred vendor).",
+          "2. Validate that the request includes mandatory information (business justification, cost center, estimated amount).",
+          "3. Check vendor existence and status in the ERP/AP sandbox; request vendor creation from master data team if missing (simulated via a spreadsheet update).",
+          "4. Manually draft PO in the ERP/AP sandbox (header and line items) using policy-compliant tax codes, GL accounts, and cost centers.",
+          "5. Submit PO for approval by emailing the draft or using the ERP/AP workflow, based on an approval matrix.",
+          "6. On approval, finalize and issue the PO to the vendor (simulated by marking status and exporting PDF).",
+          "7. Record processing time and any policy violations or rework in a tracking sheet."
+        ]
+      },
+      {
+        "name": "baseline_reconciliations",
+        "description": "Human accountant performs monthly vendor statement reconciliation and GL subledger reconciliations using spreadsheets and ERP/AP reports without AI support.",
+        "steps": [
+          "1. Export vendor ledger and GL subledger data from the ERP/AP sandbox for a defined period.",
+          "2. Receive vendor statements in PDF or CSV format.",
+          "3. Manually align transactions by vendor, date, and amount to identify unmatched items and timing differences.",
+          "4. Classify unreconciled items into categories (timing, data entry errors, missing invoices, disputed charges).",
+          "5. Propose adjusting entries and prepare a reconciliation summary document.",
+          "6. Submit reconciliation for review and sign-off according to existing policies.",
+          "7. Track time spent and number of unreconciled items remaining after each cycle."
+        ]
+      },
+      {
+        "name": "baseline_spend_analysis",
+        "description": "Procurement analyst manually aggregates spend data over a quarter from the ERP/AP sandbox, classifies spend by category and vendor, and produces summary reports using spreadsheets and basic BI tools.",
+        "steps": [
+          "1. Export AP transaction data for a defined quarter from the ERP/AP sandbox.",
+          "2. Normalize vendor names and map them to vendor groups using a reference table.",
+          "3. Map GL accounts and cost centers to spend categories and subcategories using a predefined category mapping spreadsheet.",
+          "4. Aggregate and pivot data to compute total spend by category, vendor, and department.",
+          "5. Manually inspect for outliers and potential non-compliant spend (e.g., purchases outside preferred vendors or missing POs).",
+          "6. Create and share a spend summary report and charts.",
+          "7. Log time spent and number of identified anomalies or non-compliant items."
+        ]
+      }
+    ],
+    "controls": {
+      "policies_and_sops": "A fixed set of finance, accounting, and procurement SOPs, approval matrices, and policy documents used by both baseline and treatment conditions. No policy changes between conditions.",
+      "personnel": "Use the same pool of finance and procurement professionals for baseline and treatment, but separate sessions to avoid learning contamination as far as practical. Each participant should be trained to a consistent documented standard for the baseline SOPs.",
+      "dataset": "A shared synthetic dataset of vendors, POs, invoices, purchase requests, GL accounts, cost centers, and historical AP transactions, held constant across baseline and treatment. Input documents are the same; only the presence of the AI agent differs.",
+      "environment": "Identical ERP/AP sandbox, document repository, and network conditions for baseline and treatment runs. No AI or automation assistance is enabled in the baseline environment.",
+      "measurement": "Use the same logging templates, evaluation criteria, and review processes to assess accuracy, exceptions, and processing latency for both conditions."
+    }
+  },
+  "treatment": {
+    "description": "Agent-assisted finance, accounting, and procurement workflows executed in the same ERP/AP sandbox and document repository, with AI agents performing data extraction, policy checks, drafting of entries, and routing proposals. Human approvers remain in the loop for all financial postings and commitments. Strict tools, schemas, and guardrails enforce high control and auditability.",
+    "workflows": [
+      {
+        "name": "treatment_invoice_processing_agentic",
+        "description": "An AP Agent, operating under strict schemas and policies, processes invoices by extracting structured data, performing PO matching, proposing coding and discrepancies classification, and orchestrating approval workflows. Human AP clerks act as reviewers and final approvers in the ERP/AP sandbox.",
+        "agents": [
+          {
+            "id": "ap_invoice_agent",
+            "role": "Extract and validate invoice data, perform matching, propose coding, and orchestrate approvals within controlled tools.",
+            "tools": [
+              "ocr_extractor(invoice_pdf) -> structured_invoice_v1",
+              "erp_search_po(vendor_id, po_number) -> [po_headers, po_lines]",
+              "erp_search_vendor(vendor_name, tax_id) -> vendor_record",
+              "coding_suggester(structured_invoice_v1, policy_rules) -> {gl_accounts, cost_centers, tax_codes}",
+              "discrepancy_classifier(invoice_data, po_data) -> discrepancy_type",
+              "approval_chain_resolver(cost_center, amount, category) -> [approver_ids_in_order]",
+              "workflow_engine_api.create_task(payload)",
+              "audit_log.write(event_type, payload)"
+            ],
+            "guardrails": [
+              "Read-only access to ERP/AP financial posting endpoints; cannot post invoices or modify financial records.",
+              "Structured outputs must conform to JSON Schema `ap_invoice_structured_v1.json` enforced by server-side validation.",
+              "Policy and approval logic enforced in code (non-editable by the LLM) with hard-coded thresholds and segregation-of-duties constraints.",
+              "Any low-confidence extraction or ambiguous mapping must be flagged for human review; the agent cannot auto-resolve.",
+              "Agent actions must be idempotent and auditable; every suggestion and decision path is logged."
+            ]
+          },
+          {
+            "id": "ap_reviewer_agent",
+            "role": "Assist human reviewers by summarizing invoice context, highlighting detected exceptions, and suggesting recommended decisions without performing any postings.",
+            "tools": [
+              "context_builder(invoice_id) -> consolidated_view",
+              "policy_checker(consolidated_view) -> policy_issues",
+              "recommendation_generator(consolidated_view, policy_issues) -> recommendation"
+            ],
+            "guardrails": [
+              "Cannot call ERP/AP write endpoints.",
+              "Operates only on pre-approved context assembled by the backend.",
+              "Explicitly states confidence and rationale in every recommendation."
+            ]
+          }
+        ],
+        "steps": [
+          "1. Invoices are ingested into the document repository and pushed to the AP Agent via a queue or polling mechanism.",
+          "2. `ap_invoice_agent` calls `ocr_extractor` to convert invoices into `structured_invoice_v1` objects.",
+          "3. The agent uses `erp_search_vendor` and `erp_search_po` to locate relevant master data and open POs, then runs `coding_suggester` and `discrepancy_classifier` to propose GL accounts, cost centers, and discrepancy categories.",
+          "4. The agent determines the approval chain via `approval_chain_resolver` and prepares an 'invoice processing proposal' including extracted data, matched PO lines, coding, discrepancy classification, suggested approvers, and rationale.",
+          "5. All proposals and intermediate decisions are written to the `audit_log` with identifiers that link invoices, POs, and agent sessions.",
+          "6. Human AP clerks access an 'invoice review' UI that displays the agent proposal, supporting context, and a structured form to accept, edit, or reject each field and decision.",
+          "7. On final human approval, a backend service writes the posting to the ERP/AP sandbox, referencing the agent proposal and human decisions for auditability.",
+          "8. Latency, edits vs. agent proposals, exceptions, and escalations are logged automatically."
+        ]
+      },
+      {
+        "name": "treatment_po_creation_agentic",
+        "description": "A Procurement Request Agent assists in intake, validation, and drafting of POs, ensuring policy compliance and appropriate approval routing, while maintaining segregation of duties between requester, agent, and approver.",
+        "agents": [
+          {
+            "id": "pr_intake_agent",
+            "role": "Normalize and validate purchase request descriptions, vendors, and budget information against policies and master data, creating a structured purchase request record.",
+            "tools": [
+              "request_parser(raw_request) -> structured_pr_v1",
+              "erp_search_vendor(vendor_name, tax_id) -> vendor_record",
+              "budget_checker(cost_center, amount, period) -> budget_status",
+              "category_mapper(description, gl_accounts_catalog) -> category_code",
+              "approval_chain_resolver(cost_center, amount, category_code) -> [approver_ids]",
+              "audit_log.write(event_type, payload)"
+            ],
+            "guardrails": [
+              "Cannot create or modify POs; only drafts structured PRs.",
+              "Must enforce mandatory fields and reject incomplete requests with clear reasons.",
+              "Policies and approval thresholds are enforced in deterministic code, not prompts."
+            ]
+          },
+          {
+            "id": "po_drafter_agent",
+            "role": "Drafts POs from approved purchase requests, selecting lines, quantities, and GL codes under strict schema, and hands off to human procurement for final review and issuance.",
+            "tools": [
+              "pr_fetch(pr_id) -> structured_pr_v1",
+              "erp_search_vendor(vendor_id) -> vendor_record",
+              "po_template_generator(structured_pr_v1) -> po_draft_v1",
+              "audit_log.write(event_type, payload)"
+            ],
+            "guardrails": [
+              "Read-only access to PRs and vendor master data.",
+              "PO drafts must be validated by a backend service before human review.",
+              "Cannot issue or approve POs; final actions performed by human users."
+            ]
+          }
+        ],
+        "steps": [
+          "1. Purchase requests are submitted via a web form or email and ingested as `raw_request` objects.",
+          "2. `pr_intake_agent` parses and validates requests, normalizes vendor names, assigns spend categories, and confirms budget availability via `budget_checker`.",
+          "3. Validated PRs are queued with proposed approval chains based on `approval_chain_resolver` and logged.",
+          "4. Human approvers review PRs, including agent-suggested categorizations and justifications; they can approve, edit, or reject.",
+          "5. For approved PRs, `po_drafter_agent` drafts POs with line items, GL accounts, tax codes, and cost centers using `po_template_generator`.",
+          "6. Procurement analysts review PO drafts in a UI, make any necessary adjustments, and then issue the final PO through the ERP/AP sandbox.",
+          "7. All actions and decisions, including deviations from agent suggestions, are recorded in the audit log."
+        ]
+      },
+      {
+        "name": "treatment_reconciliations_agentic",
+        "description": "A Reconciliation Assistant Agent pre-matches transactions, classifies unreconciled items, and prepares reconciliation summaries for human accountants to review and approve.",
+        "agents": [
+          {
+            "id": "recon_agent",
+            "role": "Assist with vendor and GL reconciliations by performing fuzzy matching and proposing classifications.",
+            "tools": [
+              "erp_export_subledger(period) -> subledger_dataset",
+              "erp_export_gl(period) -> gl_dataset",
+              "vendor_statement_parser(statement_pdf_or_csv) -> vendor_statement_v1",
+              "recon_matcher(subledger_dataset, vendor_statement_v1) -> proposed_matches_v1",
+              "unreconciled_classifier(transaction) -> category_label",
+              "recon_summary_builder(matches, unreconciled_items) -> recon_summary_v1",
+              "audit_log.write(event_type, payload)"
+            ],
+            "guardrails": [
+              "Cannot post adjusting entries; suggestions only.",
+              "Matching thresholds and permitted heuristics are configured in code.",
+              "All low-confidence matches must be clearly highlighted for manual review."
+            ]
+          }
+        ],
+        "steps": [
+          "1. Periodic data exports and vendor statements are ingested into the system.",
+          "2. `recon_agent` runs `recon_matcher` and `unreconciled_classifier` to construct a draft reconciliation.",
+          "3. The agent produces a structured `recon_summary_v1` that includes proposed matches, categorized unreconciled items, and suggested adjusting entries.",
+          "4. Human accountants review the draft reconciliation in a specialized UI, confirm or adjust matches and classifications, and then post approved adjustments via the ERP/AP sandbox.",
+          "5. All proposals, edits, and final decisions are logged, along with time to complete each reconciliation."
+        ]
+      },
+      {
+        "name": "treatment_spend_analysis_agentic",
+        "description": "A Spend Analysis Agent automates data ingestion, vendor normalization, category mapping, and anomaly detection, producing draft spend reports that analysts review and finalize.",
+        "agents": [
+          {
+            "id": "spend_analysis_agent",
+            "role": "Generate draft spend analysis and anomaly recommendations using deterministic rules plus LLM-assisted classification under tight schemas.",
+            "tools": [
+              "erp_export_ap(period) -> ap_transactions_dataset",
+              "vendor_normalizer(vendor_name) -> normalized_vendor_id",
+              "category_mapper(description, gl_account, cost_center) -> spend_category_code",
+              "anomaly_detector(ap_transactions_dataset) -> [anomaly_candidates_v1]",
+              "report_builder(transformed_data, anomalies) -> spend_report_v1",
+              "audit_log.write(event_type, payload)"
+            ],
+            "guardrails": [
+              "Read-only access to AP data.",
+              "Category mappings grounded in a maintained mapping table with LLM used only for suggestions when ambiguities arise.",
+              "Anomalies are recommendations; cannot trigger workflow actions without human acknowledgment."
+            ]
+          }
+        ],
+        "steps": [
+          "1. AP data for the target quarter is exported and passed to `spend_analysis_agent`.",
+          "2. The agent normalizes vendors, applies category mappings, and runs anomaly detection.",
+          "3. A draft `spend_report_v1` is generated with tables, charts metadata, and a list of potential non-compliant spend items.",
+          "4. Human procurement analysts review, adjust categorizations and anomaly flags, and then publish the final report.",
+          "5. Deviations from agent suggestions and analyst time spent are logged for evaluation."
+        ]
+      }
+    ],
+    "controls": {
+      "segregation_of_duties": "Maintain at least three roles: Requester, Approver, and Poster/Procurement Analyst. The AI agents cannot perform approval or posting actions; these are restricted to named human users in the ERP/AP sandbox.",
+      "approvals_and_limits": "Use the same approval matrices and policy rules as baseline, implemented as deterministic server-side logic. Agent suggestions cannot override policy; they can only select from allowed options.",
+      "auditability": "Every agent action must emit a structured audit event that includes timestamp, actor (agent ID or human), input references (e.g., document IDs, record keys), proposed output, confidence level, and decision outcome.",
+      "human_in_the_loop": "All high-risk steps (financial postings, PO issuance, approval decisions) require explicit human confirmation. No autonomous committing actions by agents are permitted."
+    }
+  },
+  "workloads": [
+    {
+      "id": "dataset-invoices-v1",
+      "description": "Synthetic invoice dataset with varying complexity, for AP processing and matching experiments.",
+      "composition": {
+        "total_invoices": 500,
+        "document_types": [
+          "machine-readable PDF",
+          "scanned PDF",
+          "image with OCR noise"
+        ],
+        "complexity_distribution": {
+          "simple_single-line_invoices": 0.4,
+          "multi-line_invoices_with_single_po": 0.4,
+          "multi-line_invoices_with_multiple_pos_and_partial_receipts": 0.2
+        },
+        "edge_cases": [
+          "missing PO references",
+          "incorrect vendor names",
+          "currency mismatches",
+          "tax calculation discrepancies"
+        ]
+      },
+      "ground_truth": {
+        "fields": [
+          "vendor_id",
+          "vendor_name",
+          "invoice_number",
+          "invoice_date",
+          "due_date",
+          "total_amount",
+          "currency",
+          "tax_amount",
+          "line_items[]",
+          "matched_po_ids[]",
+          "gl_accounts[]",
+          "cost_centers[]",
+          "tax_codes[]"
+        ],
+        "storage": "Structured JSON or relational tables in the experiment data store, generated programmatically from a master synthetic ledger."
+      }
+    },
+    {
+      "id": "dataset-pos-v1",
+      "description": "Synthetic POs and purchase requests dataset for PO creation experiments.",
+      "composition": {
+        "total_purchase_requests": 200,
+        "requester_departments": [
+          "Engineering",
+          "Marketing",
+          "Sales",
+          "IT",
+          "Operations"
+        ],
+        "amount_ranges": {
+          "low_value": {
+            "range": [
+              0,
+              5000
+            ],
+            "share": 0.6
+          },
+          "mid_value": {
+            "range": [
+              5000,
+              25000
+            ],
+            "share": 0.3
+          },
+          "high_value": {
+            "range": [
+              25000,
+              100000
+            ],
+            "share": 0.1
+          }
+        },
+        "vendor_variants": [
+          "preferred_vendors",
+          "non_preferred_vendors",
+          "new_vendors_not_in_master"
+        ]
+      },
+      "ground_truth": {
+        "fields": [
+          "pr_id",
+          "requester_id",
+          "department",
+          "cost_center",
+          "description",
+          "justification",
+          "preferred_vendor_id",
+          "expected_amount",
+          "true_category",
+          "true_gl_account",
+          "true_approval_chain[]",
+          "final_po_id"
+        ]
+      }
+    },
+    {
+      "id": "dataset-recon-v1",
+      "description": "Synthetic vendor statements and ERP/AP ledger data for reconciliation experiments.",
+      "composition": {
+        "total_vendors": 50,
+        "transactions_per_vendor": {
+          "min": 20,
+          "max": 200
+        },
+        "recon_scenarios": [
+          "exact_matches",
+          "timing_differences",
+          "duplicates",
+          "missing_invoices",
+          "disputed_items"
+        ]
+      },
+      "ground_truth": {
+        "fields": [
+          "transaction_pairs[]",
+          "unreconciled_items_with_true_classification[]",
+          "correct_adjusting_entries[]"
+        ]
+      }
+    },
+    {
+      "id": "dataset-spend-v1",
+      "description": "Synthetic quarterly AP spend data for category mapping and anomaly detection experiments.",
+      "composition": {
+        "total_transactions": 10000,
+        "categories": [
+          "Software",
+          "Hardware",
+          "Professional_Services",
+          "Travel",
+          "Facilities",
+          "Marketing",
+          "Miscellaneous"
+        ],
+        "anomaly_types": [
+          "spend_above_threshold_vs_policy",
+          "use_of_non_preferred_vendor",
+          "split_purchases_to_avoid_approval_limits",
+          "misclassified_gl_accounts"
+        ]
+      },
+      "ground_truth": {
+        "fields": [
+          "true_spend_category",
+          "is_anomalous",
+          "anomaly_type_if_any"
+        ]
+      }
+    }
+  ],
+  "controls": {
+    "randomization": {
+      "unit_of_assignment": "document_or_request",
+      "method": "Randomly assign each invoice, purchase request, reconciliation case, and spend analysis batch to either baseline or treatment condition, ensuring similar distributions of complexity across both arms.",
+      "stratification": "Stratify randomization on key complexity features (e.g., single vs multi-line invoices, low vs high value PRs, vendors with high vs low transaction counts) to avoid imbalance."
+    },
+    "blinding": {
+      "operator_blinding": "Operators will know whether they are using the agent-assisted UI or the baseline UI; complete blinding is not possible. However, evaluators of accuracy will be blinded to condition by reviewing anonymized outputs against ground truth.",
+      "evaluator_blinding": "Accuracy and policy-compliance assessments will be performed on de-identified outputs (no condition labels), using a standardized rubric."
+    },
+    "training_and_familiarization": {
+      "baseline_training": "Provide all participants with standardized SOP training and practice runs on a small subset of the dataset for the baseline workflow.",
+      "treatment_training": "Provide equivalent training on the agent-assisted tools, ensuring participants understand how to review and override agent suggestions.",
+      "washout": "Use separate practice sets for training to avoid contamination of the evaluation dataset."
+    },
+    "time_window": {
+      "run_order": "To minimize learning effects, interleave baseline and treatment tasks across time rather than running all baseline first, then treatment. For example, for each participant, interleave matched mini-batches of baseline and treatment tasks in random order.",
+      "environment_stability": "Run all experiment sessions within a defined time window (e.g., 1\u20132 weeks) to reduce drift in LLM behavior and external system performance."
+    },
+    "llm_and_tools": {
+      "llm_version_lock": "Use a fixed, documented LLM version (e.g., `provider/model:version`) for all treatment runs and pin dependencies (libraries, tool versions) via lockfiles.",
+      "temperature_and_decoding": "Set deterministic decoding parameters where possible (e.g., temperature=0) to reduce variance from sampling in structured tasks.",
+      "rate_limits": "Configure rate limits and concurrency to avoid throttling or degraded performance that would confound latency measurements."
+    }
+  },
+  "metrics": [
+    {
+      "name": "field_extraction_accuracy",
+      "unit": "percentage_of_fields_correct",
+      "definition": "Proportion of required structured fields (header and line item) extracted or entered correctly per document, compared to ground truth.",
+      "applicable_to": [
+        "invoice_processing"
+      ]
+    },
+    {
+      "name": "line_item_match_accuracy",
+      "unit": "percentage_of_line_items_correctly_matched",
+      "definition": "Proportion of invoice line items correctly matched to the correct PO line(s), based on ground truth.",
+      "applicable_to": [
+        "invoice_processing"
+      ]
+    },
+    {
+      "name": "coding_accuracy",
+      "unit": "percentage_of_coding_decisions_correct",
+      "definition": "Percentage of GL account, cost center, tax code assignments that match ground truth or are deemed equivalent by a blinded reviewer.",
+      "applicable_to": [
+        "invoice_processing",
+        "po_creation"
+      ]
+    },
+    {
+      "name": "policy_compliance_rate",
+      "unit": "percentage_of_transactions_policy_compliant",
+      "definition": "Share of processed cases (invoices, POs) that comply fully with documented policies and approval matrices without requiring post-hoc correction.",
+      "applicable_to": [
+        "invoice_processing",
+        "po_creation"
+      ]
+    },
+    {
+      "name": "approval_chain_correctness",
+      "unit": "percentage_of_cases_with_correct_approval_chain",
+      "definition": "Percentage of cases where the actual approver sequence and required approvals match the policy-derived ground truth approval chain.",
+      "applicable_to": [
+        "invoice_processing",
+        "po_creation"
+      ]
+    },
+    {
+      "name": "processing_latency",
+      "unit": "seconds_per_case",
+      "definition": "Elapsed wall-clock time from case availability (invoice arrival, PR submission, dataset ready) to completion of processing (invoice posting, PO issuance, reconciliation approval, report finalization).",
+      "applicable_to": [
+        "invoice_processing",
+        "po_creation",
+        "reconciliations",
+        "spend_analysis"
+      ]
+    },
+    {
+      "name": "touch_time",
+      "unit": "seconds_of_active_human_work",
+      "definition": "Accumulated active time that human operators spend interacting with the system on a case, excluding waiting times, used as a proxy for labor effort.",
+      "applicable_to": [
+        "invoice_processing",
+        "po_creation",
+        "reconciliations",
+        "spend_analysis"
+      ]
+    },
+    {
+      "name": "exception_rate",
+      "unit": "percentage_of_cases_with_exceptions",
+      "definition": "Share of cases where exceptions occur, such as missing or incorrect data, policy violations, or unresolved discrepancies that require escalation beyond the normal path.",
+      "applicable_to": [
+        "invoice_processing",
+        "po_creation",
+        "reconciliations"
+      ]
+    },
+    {
+      "name": "escalation_rate",
+      "unit": "percentage_of_cases_escalated_to_senior_staff",
+      "definition": "Percentage of cases requiring involvement from a higher-tier approver or expert beyond what the policy matrix would normally require.",
+      "applicable_to": [
+        "invoice_processing",
+        "po_creation",
+        "reconciliations"
+      ]
+    },
+    {
+      "name": "reconciliation_match_rate",
+      "unit": "percentage_of_transactions_reconciled",
+      "definition": "Proportion of ledger and statement transactions that are successfully matched and reconciled within the experiment period.",
+      "applicable_to": [
+        "reconciliations"
+      ]
+    },
+    {
+      "name": "reconciliation_classification_accuracy",
+      "unit": "percentage_of_unreconciled_items_correctly_classified",
+      "definition": "Percentage of unreconciled items whose classification (timing difference, error, missing invoice, dispute) matches ground truth.",
+      "applicable_to": [
+        "reconciliations"
+      ]
+    },
+    {
+      "name": "spend_category_accuracy",
+      "unit": "percentage_of_transactions_correctly_categorized",
+      "definition": "Proportion of AP transactions assigned to the correct spend category and subcategory, as per ground truth mapping.",
+      "applicable_to": [
+        "spend_analysis"
+      ]
+    },
+    {
+      "name": "anomaly_precision",
+      "unit": "ratio",
+      "definition": "Among transactions flagged as anomalous, the fraction that are true anomalies according to ground truth.",
+      "applicable_to": [
+        "spend_analysis"
+      ]
+    },
+    {
+      "name": "anomaly_recall",
+      "unit": "ratio",
+      "definition": "Among all true anomalies, the fraction that are correctly flagged by the process (baseline or agentic).",
+      "applicable_to": [
+        "spend_analysis"
+      ]
+    },
+    {
+      "name": "agent_suggestion_acceptance_rate",
+      "unit": "percentage_of_agent_suggestions_accepted",
+      "definition": "Fraction of agent-proposed fields or decisions that are accepted by human reviewers without modification.",
+      "applicable_to": [
+        "invoice_processing",
+        "po_creation",
+        "reconciliations",
+        "spend_analysis"
+      ]
+    },
+    {
+      "name": "post_hoc_correction_rate",
+      "unit": "percentage_of_cases_requiring_post_hoc_fixes",
+      "definition": "Share of cases where errors are discovered after initial completion (e.g., during audits or monthly close) requiring fixes or adjustments.",
+      "applicable_to": [
+        "invoice_processing",
+        "po_creation",
+        "reconciliations"
+      ]
+    }
+  ],
+  "success_criteria": {
+    "primary": [
+      {
+        "metric": "processing_latency",
+        "target": ">= 40% reduction in median processing latency per invoice and per purchase request in the treatment condition vs. baseline, with 95% confidence intervals excluding zero effect.",
+        "workflows": [
+          "invoice_processing",
+          "po_creation"
+        ]
+      },
+      {
+        "metric": "field_extraction_accuracy",
+        "target": "Treatment field_extraction_accuracy for invoices is not statistically worse than baseline (non-inferiority margin of -2 percentage points) and ideally improves by at least +3 percentage points.",
+        "workflows": [
+          "invoice_processing"
+        ]
+      },
+      {
+        "metric": "coding_accuracy",
+        "target": "Treatment coding_accuracy is at least equal to baseline within a \u00b12 percentage point margin for invoices and POs.",
+        "workflows": [
+          "invoice_processing",
+          "po_creation"
+        ]
+      }
+    ],
+    "secondary": [
+      {
+        "metric": "touch_time",
+        "target": ">= 30% reduction in median human touch_time per invoice and purchase request in the treatment condition.",
+        "workflows": [
+          "invoice_processing",
+          "po_creation"
+        ]
+      },
+      {
+        "metric": "exception_rate",
+        "target": "Treatment exception_rate does not exceed baseline by more than 5 absolute percentage points for any workflow.",
+        "workflows": [
+          "invoice_processing",
+          "po_creation",
+          "reconciliations"
+        ]
+      },
+      {
+        "metric": "reconciliation_match_rate",
+        "target": ">= 10 percentage point improvement in reconciliation_match_rate with the agent vs. baseline, holding post_hoc_correction_rate constant or reduced.",
+        "workflows": [
+          "reconciliations"
+        ]
+      },
+      {
+        "metric": "spend_category_accuracy",
+        "target": ">= 10 percentage point improvement in spend_category_accuracy vs. baseline.",
+        "workflows": [
+          "spend_analysis"
+        ]
+      },
+      {
+        "metric": "anomaly_precision",
+        "target": "Maintain anomaly_precision \u2265 baseline - 0.05 while improving anomaly_recall by at least +0.10.",
+        "workflows": [
+          "spend_analysis"
+        ]
+      }
+    ],
+    "control_and_governance": [
+      {
+        "criterion": "No violations of segregation of duties or unauthorized system actions by the agent are observed in treatment logs.",
+        "measurement": "Audit log review for any agent-initiated postings, approvals, or policy overrides."
+      },
+      {
+        "criterion": "All agent decisions and suggestions are fully reconstructable from structured audit logs and reproducible from stored inputs.",
+        "measurement": "Random sample of 5\u201310% of treatment cases can be replayed using logged inputs and model prompts to reproduce outputs within deterministic bounds."
+      }
+    ]
+  },
+  "failure_modes": [
+    {
+      "name": "accuracy_regression",
+      "description": "Treatment workflows show significantly lower accuracy than baseline in field extraction, coding, reconciliation, or spend categorization.",
+      "triggers": [
+        "field_extraction_accuracy_treatment < field_extraction_accuracy_baseline - 0.02",
+        "coding_accuracy_treatment < coding_accuracy_baseline - 0.02",
+        "spend_category_accuracy_treatment < spend_category_accuracy_baseline"
+      ],
+      "mitigations": [
+        "Tighten schemas and add additional validation rules in backend code.",
+        "Introduce higher-confidence thresholds for auto-suggestions, routing more low-confidence cases to human review.",
+        "Refine prompts and provide better few-shot examples anchored on policy documents, keeping deterministic decoding."
+      ]
+    },
+    {
+      "name": "exception_and_escalation_spike",
+      "description": "Agent suggestions drive higher exception and escalation rates, increasing workload for senior staff.",
+      "triggers": [
+        "exception_rate_treatment > exception_rate_baseline + 0.05",
+        "escalation_rate_treatment > escalation_rate_baseline + 0.05"
+      ],
+      "mitigations": [
+        "Narrow scope of automated suggestions to well-understood cases; route complex cases directly to human processing.",
+        "Improve training data for agent prompts with examples of borderline cases and clear guidance.",
+        "Adjust agent confidence thresholds or conditions under which it proposes actions."
+      ]
+    },
+    {
+      "name": "policy_non_compliance",
+      "description": "Treatment condition leads to any cases that materially violate documented finance/procurement policies or approval chains.",
+      "triggers": [
+        "policy_compliance_rate_treatment < policy_compliance_rate_baseline - 0.01",
+        "Any critical incident flagged in audit review as policy violation."
+      ],
+      "mitigations": [
+        "Move all policy and approval logic out of prompts into formal, tested code.",
+        "Add additional pre-commit checks that reject any transaction violating policies, regardless of agent suggestion.",
+        "Increase human supervision level (e.g., secondary review) for cases above certain risk thresholds."
+      ]
+    },
+    {
+      "name": "latent_model_instability",
+      "description": "LLM output changes across runs for identical inputs, undermining reproducibility and auditability.",
+      "triggers": [
+        "Re-run of a subset of cases produces materially different structured outputs under the same configuration.",
+        "Observed differences in accuracy or behavior over time without configuration changes."
+      ],
+      "mitigations": [
+        "Use deterministic decoding (temperature=0, fixed seeds) and strict output schemas.",
+        "Snapshot prompts and tool configurations and version them alongside model version in logs.",
+        "If model provider updates the model, pin to a specific version or capture the change as a new experiment version."
+      ]
+    },
+    {
+      "name": "throughput_bottlenecks",
+      "description": "Agent orchestration and tool calls introduce latency that offsets human time savings, reducing net throughput gains.",
+      "triggers": [
+        "processing_latency_treatment >= processing_latency_baseline",
+        "High variance in latency due to API timeouts or retries."
+      ],
+      "mitigations": [
+        "Parallelize agent operations on independent documents where permissible.",
+        "Cache frequent lookups (e.g., vendor master data) and minimize unnecessary tool calls.",
+        "Introduce timeouts and robust retry strategies; adjust batch sizes and concurrency settings."
+      ]
+    },
+    {
+      "name": "operator_over_trust",
+      "description": "Humans accept agent suggestions without adequate scrutiny, leading to error propagation even if baseline accuracy is lower.",
+      "triggers": [
+        "agent_suggestion_acceptance_rate is very high (> 0.95) while post_hoc_correction_rate increases.",
+        "Audit review identifies multiple instances of rubber-stamping erroneous agent suggestions."
+      ],
+      "mitigations": [
+        "Display clear confidence indicators and highlight uncertain fields.",
+        "Introduce mandatory double-check steps for high-value or high-risk transactions.",
+        "Provide training emphasizing critical thinking and review responsibilities."
+      ]
+    }
+  ],
+  "required_environment": {
+    "infrastructure": {
+      "compute": "Cloud or on-prem environment capable of running the chosen LLM (via API or hosted model) and associated microservices (Python-based APIs, workers, and databases).",
+      "storage": "Relational database (e.g., PostgreSQL) or equivalent for experiment metadata, structured financial datasets, and audit logs; object storage for documents (e.g., PDFs, images).",
+      "message_queue": "Queue or pub/sub system (e.g., RabbitMQ, Kafka, SQS) for orchestrating agent tasks and workflows.",
+      "network": "Secure network configuration with TLS, proper access control, and audit logging for all external API calls."
+    },
+    "software_stack": {
+      "languages": [
+        "Python 3.10+"
+      ],
+      "services": [
+        "API service implementing finance/procurement tools and business logic.",
+        "Orchestration service managing agent workflows and queues.",
+        "Front-end UIs for AP clerks, procurement analysts, and accountants (can be basic web UIs or notebooks)."
+      ],
+      "dependencies": [
+        "LLM client SDK for chosen model provider, pinned to a specific version.",
+        "OCR library or service for invoice parsing (e.g., Tesseract, cloud OCR API).",
+        "Database driver libraries (e.g., psycopg2 or SQLAlchemy).",
+        "Experiment tracking library or custom logging framework."
+      ],
+      "config_management": "Use environment variables or configuration files for endpoints and credentials; do not hard-code secrets."
+    },
+    "data_and_sandbox": {
+      "erp_ap_sandbox": "A simulated or real ERP/AP test instance containing the synthetic vendors, POs, GL accounts, cost centers, and AP transactions defined in the datasets. Must be isolated from production systems.",
+      "document_repository": "A controlled storage area (e.g., S3 bucket or local directory) with structured naming for synthetic invoices, statements, and related documents.",
+      "synthetic_data_generators": "Scripts for generating and loading synthetic datasets (`dataset-invoices-v1`, `dataset-pos-v1`, `dataset-recon-v1`, `dataset-spend-v1`) into the sandbox environment, with stable seeds for reproducibility."
+    },
+    "security_and_compliance": {
+      "access_controls": "Role-based access control for users (AP clerk, procurement analyst, accountant, approver) and agents, with least-privilege enforcement at the database, ERP/AP, and document storage layers.",
+      "audit_logging": "Centralized, immutable logging for all actions (human and agent) with timestamps, actor IDs, and request/response payloads or hashes for replay.",
+      "privacy": "As datasets are synthetic, no real PII or sensitive financial data is required; any real integrations must comply with organizational and regulatory requirements."
+    }
+  },
+  "run_instructions": {
+    "preparation": [
+      "1. Clone the companion repository: `git clone https://github.com/bookauthority/turn-your-company-into-an-agentic-organization` and navigate to the experiment directory for Chapter 10 (e.g., `experiments/ch10_finance_ap_procurement`).",
+      "2. Install dependencies using the provided environment specification (e.g., `poetry install` or `pip install -r requirements.txt`).",
+      "3. Set required environment variables for the ERP/AP sandbox connection, document repository, and LLM API keys; ensure they point to non-production resources.",
+      "4. Run the synthetic data generator scripts to populate the ERP/AP sandbox and document repository with `dataset-invoices-v1`, `dataset-pos-v1`, `dataset-recon-v1`, and `dataset-spend-v1`, using fixed random seeds documented in the repo (e.g., `python scripts/generate_synthetic_data.py --seed 42`).",
+      "5. Initialize the experiment database schema for logging and evidence storage by running the migration or setup command (e.g., `alembic upgrade head` or `python scripts/init_db.py`)."
+    ],
+    "baseline_execution": [
+      "6. Launch the baseline UI/services: start the baseline server that exposes human-only workflows without AI agents (e.g., `uvicorn baseline_app:app --host 0.0.0.0 --port 8001`).",
+      "7. Recruit or assign trained finance and procurement participants to perform baseline workflows using the baseline UI or, if scripted, simulate operator behavior according to documented SOPs.",
+      "8. For each workload (invoices, POs, reconciliations, spend analysis), randomly assign cases to the baseline condition using the provided randomization script (e.g., `python scripts/assign_conditions.py --condition baseline`).",
+      "9. Instruct participants to process assigned cases end-to-end, ensuring they start and stop timers or that system-level time tracking is enabled to capture processing_latency and touch_time.",
+      "10. Allow baseline runs to complete for all assigned cases, ensuring that all outputs and logs are stored in the experiment database and linked to case IDs."
+    ],
+    "treatment_execution": [
+      "11. Launch the agentic workflow services: start the agent orchestration service and agent-backed UI (e.g., `uvicorn agentic_app:app --host 0.0.0.0 --port 8002`) and verify connectivity to the LLM API and tools.",
+      "12. Using the same randomization script, assign remaining cases to the treatment condition (e.g., `python scripts/assign_conditions.py --condition treatment`). Ensure distribution similarity for key complexity strata.",
+      "13. Train participants on the treatment UI, emphasizing their role as approvers/reviewers and showing how to inspect and override agent suggestions.",
+      "14. Execute treatment runs: participants process assigned cases with agent assistance, reviewing, editing, and approving agent suggestions as per SOPs and guardrails.",
+      "15. Monitor logs to ensure no violations of segregation of duties or unauthorized actions occur; pause the experiment if any anomalies arise.",
+      "16. Complete treatment runs for all assigned cases, confirming that processing_latency, touch_time, accuracy fields, exceptions, and escalations are recorded."
+    ],
+    "evaluation_and_analysis": [
+      "17. Run the evaluation scripts (e.g., `python scripts/evaluate_results.py`) to compare baseline vs. treatment performance across all metrics, using blinded ground truth where applicable.",
+      "18. Generate summary reports and visualizations (e.g., Jupyter notebooks or dashboards) that show distributions of latency, accuracy, exception rates, and escalation rates by condition and workflow.",
+      "19. Conduct a structured audit review on a sample of treatment cases (e.g., 5\u201310%) to verify auditability, segregation of duties, and reconstructability of agent decisions.",
+      "20. Document findings, including areas where the agent can safely operate with minimal supervision, and areas where humans must remain tightly in the loop, feeding into Section 10.7."
+    ],
+    "reproducibility": [
+      "21. For reproducibility, record all configuration details (model versions, prompt templates, tool code SHAs, dataset seeds) in an experiment manifest file (`experiment_manifest_ch10.json`) stored alongside results.",
+      "22. To rerun the experiment, reset the environment, reload the synthetic datasets using the same seeds, and replay the baseline and treatment flows, confirming that key metrics fall within expected ranges."
+    ]
+  },
+  "evidence_schema": {
+    "type": "object",
+    "description": "Schema for capturing experiment results, logs, and artifacts for Chapter 10 finance, accounting, and procurement agent experiments.",
+    "properties": {
+      "experiment_metadata": {
+        "type": "object",
+        "properties": {
+          "experiment_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string",
+            "description": "Semantic version of the experiment configuration (e.g., '1.0.0')."
+          },
+          "timestamp_started": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "timestamp_completed": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "llm_model_identifier": {
+            "type": "string",
+            "description": "Full identifier of the LLM used, including provider and version."
+          },
+          "config_hash": {
+            "type": "string",
+            "description": "Hash of key configuration files (prompts, tool definitions, policy rules) to support reproducibility."
+          }
+        },
+        "required": [
+          "experiment_id",
+          "version",
+          "timestamp_started",
+          "timestamp_completed",
+          "llm_model_identifier",
+          "config_hash"
+        ]
+      },
+      "cases": {
+        "type": "array",
+        "description": "Per-case records across all workflows and conditions.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "case_id": {
+              "type": "string"
+            },
+            "workflow_type": {
+              "type": "string",
+              "enum": [
+                "invoice_processing",
+                "po_creation",
+                "reconciliations",
+                "spend_analysis"
+              ]
+            },
+            "condition": {
+              "type": "string",
+              "enum": [
+                "baseline",
+                "treatment"
+              ]
+            },
+            "dataset_id": {
+              "type": "string",
+              "enum": [
+                "dataset-invoices-v1",
+                "dataset-pos-v1",
+                "dataset-recon-v1",
+                "dataset-spend-v1"
+              ]
+            },
+            "input_references": {
+              "type": "array",
+              "description": "Identifiers for input documents or records (e.g., invoice document ID, PR ID).",
+              "items": {
+                "type": "string"
+              }
+            },
+            "operator_id": {
+              "type": "string",
+              "description": "Anonymized identifier for the human operator handling this case."
+            },
+            "processing_timestamps": {
+              "type": "object",
+              "properties": {
+                "available_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "started_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "completed_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "available_at",
+                "started_at",
+                "completed_at"
+              ]
+            },
+            "touch_time_seconds": {
+              "type": "number"
+            },
+            "agent_interactions": {
+              "type": "array",
+              "description": "Applicable only for treatment; records of agent suggestions and human responses.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "tool_calls": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "tool_name": {
+                          "type": "string"
+                        },
+                        "call_timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "input_hash": {
+                          "type": "string"
+                        },
+                        "output_hash": {
+                          "type": "string"
+                        },
+                        "latency_ms": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "tool_name",
+                        "call_timestamp",
+                        "input_hash",
+                        "output_hash",
+                        "latency_ms"
+                      ]
+                    }
+                  },
+                  "suggestions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "field_name": {
+                          "type": "string"
+                        },
+                        "suggested_value": {},
+                        "confidence": {
+                          "type": "number"
+                        },
+                        "human_action": {
+                          "type": "string",
+                          "enum": [
+                            "accepted",
+                            "edited",
+                            "rejected"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "field_name",
+                        "suggested_value",
+                        "human_action"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "agent_id"
+                ]
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "description": "Final structured outputs (e.g., invoice posting data, PO data, reconciliation summary, spend report).",
+              "properties": {
+                "structured_data": {},
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "completed",
+                    "aborted",
+                    "escalated"
+                  ]
+                },
+                "exceptions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "exception_type": {
+                        "type": "string"
+                      },
+                      "severity": {
+                        "type": "string",
+                        "enum": [
+                          "low",
+                          "medium",
+                          "high"
+                        ]
+                      },
+                      "description": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "exception_type"
+                    ]
+                  }
+                },
+                "escalations": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "ground_truth_ref": {
+              "type": "string",
+              "description": "Reference to ground truth record (e.g., table and primary key) used for accuracy evaluation."
+            },
+            "metrics": {
+              "type": "object",
+              "description": "Computed metrics per case where applicable.",
+              "properties": {
+                "field_extraction_accuracy": {
+                  "type": "number"
+                },
+                "line_item_match_accuracy": {
+                  "type": "number"
+                },
+                "coding_accuracy": {
+                  "type": "number"
+                },
+                "policy_compliance": {
+                  "type": "boolean"
+                },
+                "approval_chain_correct": {
+                  "type": "boolean"
+                },
+                "processing_latency_seconds": {
+                  "type": "number"
+                },
+                "exception_occurred": {
+                  "type": "boolean"
+                },
+                "escalated": {
+                  "type": "boolean"
+                },
+                "reconciliation_match_rate": {
+                  "type": "number"
+                },
+                "reconciliation_classification_accuracy": {
+                  "type": "number"
+                },
+                "spend_category_accuracy": {
+                  "type": "number"
+                },
+                "anomaly_precision_case_level": {
+                  "type": "number"
+                },
+                "anomaly_recall_case_level": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "required": [
+            "case_id",
+            "workflow_type",
+            "condition",
+            "dataset_id",
+            "processing_timestamps",
+            "outputs"
+          ]
+        }
+      },
+      "aggregate_metrics": {
+        "type": "object",
+        "description": "Pre-computed aggregate metrics and statistical comparisons between baseline and treatment.",
+        "properties": {
+          "by_workflow_and_condition": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "workflow_type": {
+                  "type": "string"
+                },
+                "condition": {
+                  "type": "string",
+                  "enum": [
+                    "baseline",
+                    "treatment"
+                  ]
+                },
+                "n_cases": {
+                  "type": "integer"
+                },
+                "metrics_summary": {
+                  "type": "object",
+                  "properties": {
+                    "processing_latency_seconds_median": {
+                      "type": "number"
+                    },
+                    "processing_latency_seconds_ci95": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      }
+                    },
+                    "touch_time_seconds_median": {
+                      "type": "number"
+                    },
+                    "touch_time_seconds_ci95": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      }
+                    },
+                    "field_extraction_accuracy_mean": {
+                      "type": "number"
+                    },
+                    "coding_accuracy_mean": {
+                      "type": "number"
+                    },
+                    "policy_compliance_rate": {
+                      "type": "number"
+                    },
+                    "exception_rate": {
+                      "type": "number"
+                    },
+                    "escalation_rate": {
+                      "type": "number"
+                    },
+                    "reconciliation_match_rate_mean": {
+                      "type": "number"
+                    },
+                    "spend_category_accuracy_mean": {
+                      "type": "number"
+                    },
+                    "anomaly_precision_overall": {
+                      "type": "number"
+                    },
+                    "anomaly_recall_overall": {
+                      "type": "number"
+                    },
+                    "agent_suggestion_acceptance_rate": {
+                      "type": "number"
+                    },
+                    "post_hoc_correction_rate": {
+                      "type": "number"
+                    }
+                  }
+                }
+              },
+              "required": [
+                "workflow_type",
+                "condition",
+                "n_cases",
+                "metrics_summary"
+              ]
+            }
+          },
+          "comparisons": {
+            "type": "array",
+            "description": "Statistical comparisons (e.g., differences, confidence intervals, p-values) between baseline and treatment per workflow and metric.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "workflow_type": {
+                  "type": "string"
+                },
+                "metric": {
+                  "type": "string"
+                },
+                "baseline_value": {
+                  "type": "number"
+                },
+                "treatment_value": {
+                  "type": "number"
+                },
+                "difference": {
+                  "type": "number"
+                },
+                "ci95": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "p_value": {
+                  "type": "number"
+                },
+                "interpretation": {
+                  "type": "string",
+                  "description": "Narrative summary of the comparison for reporting in the chapter."
+                }
+              },
+              "required": [
+                "workflow_type",
+                "metric",
+                "baseline_value",
+                "treatment_value",
+                "difference"
+              ]
+            }
+          }
+        }
+      },
+      "audit_findings": {
+        "type": "object",
+        "description": "Results of manual audit reviews focusing on control adherence and human-in-the-loop dynamics.",
+        "properties": {
+          "sample_size": {
+            "type": "integer"
+          },
+          "segregation_of_duties_violations": {
+            "type": "integer"
+          },
+          "policy_violations": {
+            "type": "integer"
+          },
+          "reproducibility_checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "case_id": {
+                  "type": "string"
+                },
+                "replayed_successfully": {
+                  "type": "boolean"
+                },
+                "differences_observed": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "case_id",
+                "replayed_successfully"
+              ]
+            }
+          },
+          "qualitative_notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "required": [
+      "experiment_metadata",
+      "cases",
+      "aggregate_metrics",
+      "audit_findings"
+    ]
+  }
+}

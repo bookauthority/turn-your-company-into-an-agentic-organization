@@ -1,0 +1,787 @@
+{
+  "experiment_id": "ch06-mas-orchestration-vs-single-agent-v1",
+  "hypothesis": "For a moderately complex, cross-functional business workflow (e.g., B2B customer onboarding), a coordinated multi-agent workflow orchestrated via an explicit orchestration layer (queue/state-machine based) will (a) improve task-level quality and throughput compared to a single generalist agent, while (b) keeping latency and cost within acceptable bounds for operations leaders (\u226425% latency increase for at least 10% quality gain, or \u226520% throughput gain at similar quality).",
+  "baseline": {
+    "description": "Single-agent orchestration: a single generalist LLM-based agent is responsible for the entire workflow end-to-end, from intake to validation, drafting outputs, and quality checks. It uses tools directly (APIs to synthetic CRM/ERP/email), maintains its own ephemeral state per request, and there is no separate orchestration layer beyond a simple request/response call pattern.",
+    "architecture": {
+      "agent_type": "single generalist agent with tool-usage capabilities",
+      "orchestration": "synchronous function call per workflow instance (e.g., HTTP POST or CLI call) with no intermediate queues or explicit state machine; the agent internally tracks progress via prompt state only",
+      "state_management": "per-request in-memory context; no shared state store other than logs",
+      "tools": [
+        "synthetic_CRM_API (read/write customer records)",
+        "synthetic_Risk_API (returns risk scores and KYC flags)",
+        "synthetic_Contracts_API (generates contract templates)",
+        "synthetic_Email_API (simulated outbound email draft generation only; no actual sends)",
+        "synthetic_Knowledge_API (FAQ/policy retrieval for onboarding rules)"
+      ],
+      "communication_pattern": "agent interacts only with tools; no other agents involved",
+      "error_handling": "basic retries at the tool-call layer; no explicit workflow compensation logic"
+    },
+    "implementation_stub": {
+      "entrypoint": "python experiments/ch06/run_single_agent.py",
+      "config_file": "configs/ch06_single_agent.yaml",
+      "key_parameters": {
+        "model_name": "gpt-4o-mini-or-equivalent",
+        "max_steps": 12,
+        "temperature": 0.2,
+        "tool_call_budget": 10
+      }
+    }
+  },
+  "treatment": {
+    "description": "Multi-agent workflow with an explicit orchestration layer: the workflow is decomposed into distinct agent roles (router, specialist, reviewer, supervisor) coordinated through a simple orchestration layer implemented as a combination of a task queue and a state-machine controller. Each agent operates on shared workflow state persisted in a store, and communication occurs via structured messages.",
+    "architecture": {
+      "agents": [
+        {
+          "name": "RouterAgent",
+          "role": "Initial intake, classification of onboarding requests, and routing decisions (e.g., standard vs. high-risk customers; required checks).",
+          "capabilities": [
+            "natural language understanding of intake forms/emails",
+            "mapping to standardized workflow types and SLAs",
+            "adding routing metadata to shared state"
+          ]
+        },
+        {
+          "name": "DataEnrichmentAgent",
+          "role": "Collects and verifies customer data from CRM and risk tools; enriches missing fields.",
+          "capabilities": [
+            "calls synthetic_CRM_API and synthetic_Risk_API",
+            "normalizes enrichment results into structured JSON",
+            "flags inconsistencies or missing required data"
+          ]
+        },
+        {
+          "name": "ContractDraftingAgent",
+          "role": "Generates a draft service agreement or order form based on customer profile and risk classification.",
+          "capabilities": [
+            "retrieves policy/price rules from synthetic_Knowledge_API",
+            "calls synthetic_Contracts_API to assemble templates",
+            "returns a draft contract summary and structured terms"
+          ]
+        },
+        {
+          "name": "QualityReviewerAgent",
+          "role": "Performs an automated quality and compliance review across enriched data and draft contract; suggests corrections.",
+          "capabilities": [
+            "cross-checks fields against policy rules",
+            "identifies potential inconsistencies or risk rule violations",
+            "emits a structured review report with pass/fail and reasons"
+          ]
+        },
+        {
+          "name": "SupervisorAgent",
+          "role": "Final decision logic: accepts or rejects the workflow outcome, requests rework from specific agents, or escalates for human review.",
+          "capabilities": [
+            "reads shared workflow state and previous agent outputs",
+            "decides next state in state machine (e.g., DONE, REWORK_ENRICHMENT)",
+            "triggers delegation by posting tasks back to orchestration layer"
+          ]
+        }
+      ],
+      "orchestration": {
+        "pattern": "central orchestrator with per-workflow state machine and message queue",
+        "components": [
+          "WorkflowStateStore (e.g., SQLite/Postgres or in-memory DB for tests)",
+          "TaskQueue (simple FIFO in code, or Redis/RabbitMQ/Kafka for production-like setups)",
+          "OrchestratorService (state-machine controller routing tasks to agents)"
+        ],
+        "state_machine_example": {
+          "states": [
+            "INTAKE",
+            "ROUTED",
+            "ENRICHED",
+            "CONTRACT_DRAFTED",
+            "REVIEWED",
+            "APPROVED",
+            "REWORK_NEEDED",
+            "ESCALATED",
+            "DONE",
+            "FAILED"
+          ],
+          "transitions": [
+            "INTAKE -> ROUTED (RouterAgent completes classification)",
+            "ROUTED -> ENRICHED (DataEnrichmentAgent completes)",
+            "ENRICHED -> CONTRACT_DRAFTED (ContractDraftingAgent completes)",
+            "CONTRACT_DRAFTED -> REVIEWED (QualityReviewerAgent completes)",
+            "REVIEWED -> APPROVED (SupervisorAgent approves)",
+            "REVIEWED -> REWORK_NEEDED (SupervisorAgent requires rework)",
+            "REWORK_NEEDED -> ENRICHED or CONTRACT_DRAFTED (targeted rework)",
+            "APPROVED -> DONE",
+            "any_state -> ESCALATED (SupervisorAgent deems human review necessary)",
+            "any_state -> FAILED (systemic or unrecoverable error)"
+          ]
+        }
+      },
+      "state_management": {
+        "store_type": "SQLite (default for reproducibility) with an ORM or lightweight DAL",
+        "entities": [
+          "WorkflowInstance",
+          "AgentMessage",
+          "ToolCallLog",
+          "StateTransition"
+        ],
+        "shared_state_schema_ref": "schemas/ch06/workflow_state.schema.json"
+      },
+      "communication_pattern": "agents communicate indirectly via shared state and task queue; each task includes a workflow_id, target_agent, and an operation type (e.g., ENRICH, REVIEW). No direct agent-to-agent calls.",
+      "error_handling": {
+        "retries": {
+          "max_retries_per_task": 2,
+          "backoff_strategy": "exponential with jitter"
+        },
+        "dead_letter_queue": "failed_tasks table or topic for post-hoc analysis",
+        "loop_protection": "max_state_transitions_per_workflow=20; loop detection via repeated cycles between the same states",
+        "conflict_resolution": "last-writer-wins with conflict logs; experiments log all conflicts for analysis"
+      }
+    },
+    "implementation_stub": {
+      "entrypoint": "python experiments/ch06/run_multi_agent.py",
+      "config_file": "configs/ch06_multi_agent.yaml",
+      "key_parameters": {
+        "model_name": "gpt-4o-mini-or-equivalent-for-all-agents",
+        "max_agent_steps_per_task": 6,
+        "temperature": 0.2,
+        "max_total_state_transitions": 20
+      }
+    }
+  },
+  "workloads": [
+    {
+      "name": "synthetic_customer_onboarding_standard",
+      "description": "Synthetic B2B customer onboarding cases representing standard risk, complete data, and straightforward pricing. Simulates a SaaS vendor onboarding mid-market B2B customers.",
+      "input_dataset": {
+        "source": "repository",
+        "path": "data/ch06/onboarding/standard_cases.jsonl",
+        "size": 200,
+        "fields": [
+          "case_id",
+          "company_profile",
+          "intake_email",
+          "products_requested",
+          "expected_start_date",
+          "country",
+          "industry",
+          "annual_revenue_band"
+        ],
+        "label_schema": "schemas/ch06/onboarding_case.schema.json"
+      },
+      "ground_truth": {
+        "source": "repository",
+        "path": "data/ch06/onboarding/standard_ground_truth.jsonl",
+        "description": "Reference outputs derived from a combination of human-designed rules and LLM-generated solutions validated by the author. Includes target enriched profile, risk classification, and target contract summary.",
+        "fields": [
+          "case_id",
+          "target_enriched_profile",
+          "target_risk_category",
+          "target_contract_summary",
+          "target_sla_class"
+        ]
+      }
+    },
+    {
+      "name": "synthetic_customer_onboarding_high_risk",
+      "description": "Synthetic onboarding cases with incomplete data, higher regulatory or credit risk flags, and edge-case pricing/terms that stress test routing and review behavior.",
+      "input_dataset": {
+        "source": "repository",
+        "path": "data/ch06/onboarding/high_risk_cases.jsonl",
+        "size": 200,
+        "fields": [
+          "case_id",
+          "company_profile",
+          "intake_email",
+          "products_requested",
+          "expected_start_date",
+          "country",
+          "industry",
+          "annual_revenue_band",
+          "known_issues"
+        ],
+        "label_schema": "schemas/ch06/onboarding_case.schema.json"
+      },
+      "ground_truth": {
+        "source": "repository",
+        "path": "data/ch06/onboarding/high_risk_ground_truth.jsonl",
+        "description": "Reference outputs specifying correct escalations, additional checks, and conservative contract terms for risky customers.",
+        "fields": [
+          "case_id",
+          "target_enriched_profile",
+          "target_risk_category",
+          "target_contract_summary",
+          "should_escalate",
+          "required_additional_checks"
+        ]
+      }
+    },
+    {
+      "name": "synthetic_customer_onboarding_mixed_batch",
+      "description": "Mixed stream of standard and high-risk onboarding cases simulating a real queue over a fixed time window. Used for throughput experiments.",
+      "input_dataset": {
+        "source": "repository",
+        "path": "data/ch06/onboarding/mixed_cases.jsonl",
+        "size": 400,
+        "fields": [
+          "case_id",
+          "segment",
+          "company_profile",
+          "intake_email",
+          "products_requested",
+          "expected_start_date",
+          "country",
+          "industry",
+          "annual_revenue_band",
+          "known_issues"
+        ],
+        "label_schema": "schemas/ch06/onboarding_case.schema.json"
+      },
+      "ground_truth": {
+        "source": "repository",
+        "path": "data/ch06/onboarding/mixed_ground_truth.jsonl",
+        "description": "Merged ground truth labels for both standard and high-risk cases tagged by segment.",
+        "fields": [
+          "case_id",
+          "segment",
+          "target_enriched_profile",
+          "target_risk_category",
+          "target_contract_summary",
+          "target_sla_class",
+          "should_escalate",
+          "required_additional_checks"
+        ]
+      }
+    }
+  ],
+  "controls": {
+    "llm_and_tools": {
+      "llm_provider": "Same LLM family and version across baseline and treatment (e.g., OpenAI gpt-4o-mini or equivalent). If using open-source models, same checkpoint and inference parameters.",
+      "temperature": 0.2,
+      "top_p": 0.9,
+      "max_tokens": 2048,
+      "tool_implementations": "Identical Python functions and back-end behavior for synthetic_CRM_API, synthetic_Risk_API, synthetic_Contracts_API, synthetic_Email_API, synthetic_Knowledge_API across both conditions."
+    },
+    "prompting": {
+      "business_rules": "Identical business rules and policy descriptions provided to all agents; single-agent baseline receives combined guidance, while multi-agent system receives role-specific excerpts sourced from the same canonical policy files.",
+      "evaluation_prompts": "Automatic evaluators (where used, e.g., LLM-as-judge) must use the same prompts and models for scoring baseline and treatment outputs."
+    },
+    "compute_and_environment": {
+      "hardware": "Run all experiments on the same class of machine (e.g., 4 vCPU, 16GB RAM) or same Kubernetes node pool type.",
+      "concurrency": "Limit concurrent workflow executions to the same fixed level (e.g., 10 parallel workflows) for both baseline and treatment in throughput experiments.",
+      "rate_limits": "Apply identical LLM and tool rate limits (QPS caps) in both conditions."
+    },
+    "case_assignment": {
+      "randomization": "For each workload, randomly shuffle the list of case_ids and then assign identical sequences to baseline and treatment runs.",
+      "runs_per_condition": "At least 3 full runs per workload and condition to average out stochastic LLM variance; re-seed randomness per run deterministically."
+    },
+    "governance": {
+      "no_human_intervention": "During benchmark runs, no manual corrections or overrides are allowed. Human inspection is used only for post-hoc evaluation and labeling (if needed), not during execution.",
+      "frozen_code": "Tag a release in the repository (e.g., `ch06-experiments-v1`) and ensure both baseline and treatment experiments use that tag."
+    }
+  },
+  "metrics": [
+    {
+      "name": "workflow_success_rate",
+      "description": "Fraction of workflows that reach a DONE state without escalation or failure and meet minimum quality thresholds.",
+      "unit": "percentage_of_workflows"
+    },
+    {
+      "name": "escalation_rate",
+      "description": "Fraction of workflows that the system flags for human review or escalation.",
+      "unit": "percentage_of_workflows"
+    },
+    {
+      "name": "average_end_to_end_latency",
+      "description": "Average wall-clock time from workflow intake to DONE/ESCALATED/FAILED.",
+      "unit": "seconds_per_workflow"
+    },
+    {
+      "name": "median_end_to_end_latency",
+      "description": "Median wall-clock time from workflow intake to DONE/ESCALATED/FAILED.",
+      "unit": "seconds_per_workflow"
+    },
+    {
+      "name": "throughput",
+      "description": "Number of workflows completed (DONE or ESCALATED) per unit time under a fixed concurrency configuration.",
+      "unit": "workflows_per_minute"
+    },
+    {
+      "name": "quality_score_enrichment",
+      "description": "Accuracy of enriched customer profiles compared to ground truth.",
+      "unit": "accuracy_percentage"
+    },
+    {
+      "name": "quality_score_risk_classification",
+      "description": "Accuracy of risk category and escalation decisions compared to ground truth.",
+      "unit": "accuracy_percentage"
+    },
+    {
+      "name": "quality_score_contract_summary",
+      "description": "Semantic quality and correctness of contract summaries vs. ground truth, as measured by a rubric or LLM-as-judge.",
+      "unit": "quality_points_on_0_1_or_0_100_scale"
+    },
+    {
+      "name": "tool_call_count",
+      "description": "Average total number of tool calls per workflow (summed across all tools).",
+      "unit": "tool_calls_per_workflow"
+    },
+    {
+      "name": "llm_token_usage",
+      "description": "Total LLM token usage per workflow across all prompts and responses.",
+      "unit": "tokens_per_workflow"
+    },
+    {
+      "name": "estimated_llm_cost",
+      "description": "Estimated monetary cost of LLM usage based on a configurable price per 1K tokens.",
+      "unit": "usd_per_workflow"
+    },
+    {
+      "name": "state_transitions_per_workflow",
+      "description": "Number of state transitions a workflow instance goes through (proxy for orchestration overhead and complexity).",
+      "unit": "transitions_per_workflow"
+    },
+    {
+      "name": "rework_rate",
+      "description": "Fraction of workflows that required at least one rework cycle (e.g., REWORK_NEEDED state).",
+      "unit": "percentage_of_workflows"
+    },
+    {
+      "name": "deadlock_or_loop_rate",
+      "description": "Fraction of workflows that were terminated due to loop detection or exceeding max transitions.",
+      "unit": "percentage_of_workflows"
+    },
+    {
+      "name": "conflicting_actions_rate",
+      "description": "Fraction of workflows where conflicting actions (e.g., contradictory writes) between agents were detected.",
+      "unit": "percentage_of_workflows"
+    }
+  ],
+  "success_criteria": {
+    "primary": [
+      "On the mixed_batch workload, the multi-agent treatment achieves at least a 10 percentage point improvement in either quality_score_risk_classification or quality_score_contract_summary over the single-agent baseline, OR at least a 20% increase in throughput, while keeping average_end_to_end_latency increase \u226425% relative to baseline.",
+      "workflow_success_rate for the multi-agent treatment is not more than 5 percentage points lower than baseline; ideally it is higher."
+    ],
+    "secondary": [
+      "escalation_rate is lower or equal in the multi-agent treatment for standard cases; for high-risk cases, a higher but more accurate escalation_rate is acceptable if matched by improved risk classification accuracy.",
+      "rework_rate in the multi-agent system remains \u226430% unless accompanied by clear improvements in final quality metrics.",
+      "deadlock_or_loop_rate and conflicting_actions_rate are both <1% of workflows in the multi-agent system."
+    ],
+    "business_interpretation": "For operations leaders, the multi-agent pattern is considered beneficial if it either (a) raises quality at acceptable latency and cost, making it suitable for high-stakes workflows, or (b) significantly improves throughput at comparable quality, making it suitable for high-volume, moderate-risk workflows."
+  },
+  "failure_modes": {
+    "technical": [
+      "Deadlocks or livelocks in the multi-agent state machine (e.g., infinite cycling between REWORK_NEEDED and ENRICHED).",
+      "Excessive orchestration overhead causing higher latency and cost without quality or throughput gains.",
+      "Race conditions or conflicting actions when multiple agents write to shared state concurrently.",
+      "Message or task loss in the queue implementation leading to stuck workflows.",
+      "Agent prompt misalignment causing agents to duplicate work or ignore state (e.g., ContractDraftingAgent ignoring enriched risk flags)."
+    ],
+    "behavioral": [
+      "Over-fragmentation of roles leading to brittle workflows that break when scenarios deviate slightly from training cases.",
+      "Excessive escalations in the multi-agent system that negate automation value.",
+      "Specialist agents becoming too narrow and failing to handle cross-cutting logic that the single-agent baseline handled correctly."
+    ],
+    "measurement_and_experimental": [
+      "Non-comparable workloads due to misaligned random seeds or different test subsets between conditions.",
+      "Evaluator bias if LLM-as-judge favors more verbose or structured outputs (common in multi-agent treatment) over minimal but correct single-agent outputs.",
+      "Incorrect or inconsistent ground truth labels, particularly for contract summaries and escalation decisions."
+    ],
+    "mitigations": [
+      "Implement strict max_state_transitions_per_workflow and log any workflows terminated for loop protection.",
+      "Add conflict detection in the WorkflowStateStore (e.g., optimistic concurrency control) and log all conflicts.",
+      "Validate datasets and ground truth with scripted sanity checks (e.g., all case_ids aligned across inputs and labels).",
+      "Use blinded evaluation prompts where LLM-as-judge is not informed whether an output came from baseline or treatment.",
+      "Run pilot dry-runs on a subset (e.g., 20 cases) before full experiments to catch orchestration logic bugs."
+    ]
+  },
+  "required_environment": {
+    "software": [
+      "Python >= 3.10",
+      "Poetry or pip-based virtualenv for dependency management",
+      "Key dependencies (specified in pyproject.toml or requirements.txt):",
+      "- FastAPI or Flask (if running orchestrator as a service; optional for local batch mode)",
+      "- SQLAlchemy or equivalent ORM (for SQLite/Postgres)",
+      "- Redis or local queue library (if using Redis-backed task queues; otherwise an in-process queue implementation is provided)",
+      "- HTTP client library (e.g., httpx or requests) for LLM and tool calls",
+      "- pydantic or dataclasses-json for schema validation",
+      "- numpy/pandas for metric aggregation and analysis"
+    ],
+    "infrastructure": [
+      "Local developer machine or cloud VM with at least 4 vCPUs and 16 GB RAM.",
+      "Access to chosen LLM endpoint (cloud or local model server) configured via environment variables (e.g., OPENAI_API_KEY).",
+      "SQLite database file (default) or Postgres if desired, pre-configured in configs/ch06_*.yaml.",
+      "Optional: Redis instance if using Redis-backed TaskQueue implementation."
+    ],
+    "repository_layout": {
+      "repo_url": "https://github.com/bookauthority/turn-your-company-into-an-agentic-organization",
+      "paths": [
+        "experiments/ch06/ (experiment scripts and orchestrator/agent implementations)",
+        "configs/ch06_single_agent.yaml (baseline configuration)",
+        "configs/ch06_multi_agent.yaml (multi-agent configuration)",
+        "data/ch06/onboarding/ (synthetic datasets and ground truth)",
+        "schemas/ch06/ (JSON schemas for inputs, workflow state, and outputs)",
+        "notebooks/ch06/ (optional analysis notebooks for plotting results)"
+      ]
+    },
+    "configuration": {
+      "environment_variables": [
+        "LLM_PROVIDER (e.g., openai)",
+        "LLM_MODEL_NAME (e.g., gpt-4o-mini)",
+        "OPENAI_API_KEY or equivalent",
+        "DB_URL (e.g., sqlite:///./ch06_experiments.db)",
+        "QUEUE_BACKEND (e.g., in_memory or redis)"
+      ],
+      "seeding": "Use a deterministic random seed (e.g., 42) for workload shuffling and any stochastic control flows where applicable; seed is configurable via CLI flag or config file."
+    }
+  },
+  "run_instructions": [
+    "1. Clone the repository and check out the experiment tag:\n   - git clone https://github.com/bookauthority/turn-your-company-into-an-agentic-organization.git\n   - cd turn-your-company-into-an-agentic-organization\n   - git checkout ch06-experiments-v1   # or the tag specified in the book",
+    "2. Set up Python environment and install dependencies:\n   - python -m venv .venv\n   - source .venv/bin/activate  # Windows: .venv\\\\Scripts\\\\activate\n   - pip install -r requirements.txt  # or `poetry install` if using Poetry",
+    "3. Configure environment variables:\n   - export LLM_PROVIDER=openai\n   - export LLM_MODEL_NAME=gpt-4o-mini  # or another supported model\n   - export OPENAI_API_KEY=YOUR_KEY_HERE\n   - export DB_URL=sqlite:///./ch06_experiments.db\n   - export QUEUE_BACKEND=in_memory  # or redis if configured\n   - export RANDOM_SEED=42",
+    "4. Validate datasets and schemas:\n   - python experiments/ch06/validate_datasets.py \\\n       --input-dir data/ch06/onboarding \\\n       --schema-dir schemas/ch06\n   This should report zero schema validation errors before proceeding.",
+    "5. Run the single-agent baseline for each workload:\n   - python experiments/ch06/run_single_agent.py \\\n       --config configs/ch06_single_agent.yaml \\\n       --workload standard_cases \\\n       --runs 3 \\\n       --output-dir results/ch06/baseline/standard\n   - python experiments/ch06/run_single_agent.py \\\n       --config configs/ch06_single_agent.yaml \\\n       --workload high_risk_cases \\\n       --runs 3 \\\n       --output-dir results/ch06/baseline/high_risk\n   - python experiments/ch06/run_single_agent.py \\\n       --config configs/ch06_single_agent.yaml \\\n       --workload mixed_cases \\\n       --runs 3 \\\n       --output-dir results/ch06/baseline/mixed",
+    "6. Run the multi-agent treatment for each workload:\n   - python experiments/ch06/run_multi_agent.py \\\n       --config configs/ch06_multi_agent.yaml \\\n       --workload standard_cases \\\n       --runs 3 \\\n       --output-dir results/ch06/multi_agent/standard\n   - python experiments/ch06/run_multi_agent.py \\\n       --config configs/ch06_multi_agent.yaml \\\n       --workload high_risk_cases \\\n       --runs 3 \\\n       --output-dir results/ch06/multi_agent/high_risk\n   - python experiments/ch06/run_multi_agent.py \\\n       --config configs/ch06_multi_agent.yaml \\\n       --workload mixed_cases \\\n       --runs 3 \\\n       --output-dir results/ch06/multi_agent/mixed",
+    "7. Compute metrics and compare baseline vs. treatment:\n   - python experiments/ch06/aggregate_metrics.py \\\n       --baseline-dir results/ch06/baseline \\\n       --treatment-dir results/ch06/multi_agent \\\n       --ground-truth-dir data/ch06/onboarding \\\n       --output-file results/ch06/summary_metrics.json\n   This script calculates metrics defined in this spec for each workload and condition.",
+    "8. (Optional) Run qualitative or LLM-as-judge evaluations of contract summaries:\n   - python experiments/ch06/evaluate_contract_quality.py \\\n       --results-dir results/ch06 \\\n       --ground-truth-dir data/ch06/onboarding \\\n       --model-name $LLM_MODEL_NAME \\\n       --output-file results/ch06/contract_quality_scores.json",
+    "9. Analyze and visualize the results (optional but recommended):\n   - jupyter notebook notebooks/ch06/analyze_ch06_experiments.ipynb\n   Use the notebook to load results/ch06/summary_metrics.json and visualize differences in quality, latency, throughput, and cost.",
+    "10. Document observations:\n   - Record which configuration variants (e.g., fewer/more agents, different state-machine settings) you tried, along with their metric outcomes, in a markdown log (e.g., results/ch06/experiment_log.md) to support organizational decision-making."
+  ],
+  "evidence_schema": {
+    "summary_file": {
+      "path": "results/ch06/summary_metrics.json",
+      "description": "Top-level JSON file summarizing metrics by workload and condition.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "experiment_id": {
+                "type": "string"
+              },
+              "timestamp_utc": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "llm_model_name": {
+                "type": "string"
+              },
+              "random_seed": {
+                "type": "integer"
+              },
+              "runs_per_condition": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "experiment_id",
+              "timestamp_utc",
+              "llm_model_name",
+              "random_seed",
+              "runs_per_condition"
+            ]
+          },
+          "results": {
+            "type": "object",
+            "description": "Metrics by workload and condition.",
+            "patternProperties": {
+              "^[a-zA-Z0-9_]+$": {
+                "type": "object",
+                "description": "Per-workload metrics (e.g., standard_cases, high_risk_cases, mixed_cases).",
+                "properties": {
+                  "baseline": {
+                    "type": "object",
+                    "properties": {
+                      "workflow_success_rate": {
+                        "type": "number"
+                      },
+                      "escalation_rate": {
+                        "type": "number"
+                      },
+                      "average_end_to_end_latency": {
+                        "type": "number"
+                      },
+                      "median_end_to_end_latency": {
+                        "type": "number"
+                      },
+                      "throughput": {
+                        "type": "number"
+                      },
+                      "quality_score_enrichment": {
+                        "type": "number"
+                      },
+                      "quality_score_risk_classification": {
+                        "type": "number"
+                      },
+                      "quality_score_contract_summary": {
+                        "type": "number"
+                      },
+                      "tool_call_count": {
+                        "type": "number"
+                      },
+                      "llm_token_usage": {
+                        "type": "number"
+                      },
+                      "estimated_llm_cost": {
+                        "type": "number"
+                      },
+                      "state_transitions_per_workflow": {
+                        "type": "number"
+                      },
+                      "rework_rate": {
+                        "type": "number"
+                      },
+                      "deadlock_or_loop_rate": {
+                        "type": "number"
+                      },
+                      "conflicting_actions_rate": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "workflow_success_rate",
+                      "escalation_rate",
+                      "average_end_to_end_latency",
+                      "throughput",
+                      "quality_score_enrichment",
+                      "quality_score_risk_classification",
+                      "quality_score_contract_summary",
+                      "tool_call_count",
+                      "llm_token_usage",
+                      "estimated_llm_cost",
+                      "state_transitions_per_workflow",
+                      "rework_rate",
+                      "deadlock_or_loop_rate",
+                      "conflicting_actions_rate"
+                    ]
+                  },
+                  "multi_agent": {
+                    "type": "object",
+                    "properties": {
+                      "workflow_success_rate": {
+                        "type": "number"
+                      },
+                      "escalation_rate": {
+                        "type": "number"
+                      },
+                      "average_end_to_end_latency": {
+                        "type": "number"
+                      },
+                      "median_end_to_end_latency": {
+                        "type": "number"
+                      },
+                      "throughput": {
+                        "type": "number"
+                      },
+                      "quality_score_enrichment": {
+                        "type": "number"
+                      },
+                      "quality_score_risk_classification": {
+                        "type": "number"
+                      },
+                      "quality_score_contract_summary": {
+                        "type": "number"
+                      },
+                      "tool_call_count": {
+                        "type": "number"
+                      },
+                      "llm_token_usage": {
+                        "type": "number"
+                      },
+                      "estimated_llm_cost": {
+                        "type": "number"
+                      },
+                      "state_transitions_per_workflow": {
+                        "type": "number"
+                      },
+                      "rework_rate": {
+                        "type": "number"
+                      },
+                      "deadlock_or_loop_rate": {
+                        "type": "number"
+                      },
+                      "conflicting_actions_rate": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "workflow_success_rate",
+                      "escalation_rate",
+                      "average_end_to_end_latency",
+                      "throughput",
+                      "quality_score_enrichment",
+                      "quality_score_risk_classification",
+                      "quality_score_contract_summary",
+                      "tool_call_count",
+                      "llm_token_usage",
+                      "estimated_llm_cost",
+                      "state_transitions_per_workflow",
+                      "rework_rate",
+                      "deadlock_or_loop_rate",
+                      "conflicting_actions_rate"
+                    ]
+                  }
+                },
+                "required": [
+                  "baseline",
+                  "multi_agent"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "metadata",
+          "results"
+        ]
+      }
+    },
+    "per_run_files": {
+      "path_pattern": "results/ch06/{condition}/{workload}/run_{run_id}.json",
+      "description": "Detailed logs and metrics per run, for debugging and deeper analysis.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "condition": {
+            "type": "string",
+            "enum": [
+              "baseline",
+              "multi_agent"
+            ]
+          },
+          "workload": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "integer"
+          },
+          "random_seed": {
+            "type": "integer"
+          },
+          "llm_model_name": {
+            "type": "string"
+          },
+          "cases": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "case_id": {
+                  "type": "string"
+                },
+                "start_time_utc": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "end_time_utc": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "final_state": {
+                  "type": "string",
+                  "enum": [
+                    "DONE",
+                    "ESCALATED",
+                    "FAILED",
+                    "TERMINATED_FOR_LOOP"
+                  ]
+                },
+                "state_transition_count": {
+                  "type": "integer"
+                },
+                "tool_calls": {
+                  "type": "integer"
+                },
+                "llm_tokens": {
+                  "type": "integer"
+                },
+                "estimated_llm_cost": {
+                  "type": "number"
+                },
+                "quality": {
+                  "type": "object",
+                  "properties": {
+                    "enrichment_correct": {
+                      "type": "boolean"
+                    },
+                    "risk_classification_correct": {
+                      "type": "boolean"
+                    },
+                    "contract_quality_score": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "enrichment_correct",
+                    "risk_classification_correct",
+                    "contract_quality_score"
+                  ]
+                },
+                "errors": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "case_id",
+                "start_time_utc",
+                "end_time_utc",
+                "final_state",
+                "state_transition_count",
+                "tool_calls",
+                "llm_tokens",
+                "estimated_llm_cost",
+                "quality"
+              ]
+            }
+          }
+        },
+        "required": [
+          "condition",
+          "workload",
+          "run_id",
+          "cases"
+        ]
+      }
+    },
+    "audit_and_debug_logs": {
+      "path_pattern": "results/ch06/{condition}/{workload}/logs/*.jsonl",
+      "description": "Optional detailed audit logs with per-step agent messages and state transitions used for diagnosing failure modes like deadlocks, loops, or conflicting actions.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "timestamp_utc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "workflow_id": {
+            "type": "string"
+          },
+          "case_id": {
+            "type": "string"
+          },
+          "agent_name": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string",
+            "enum": [
+              "STATE_TRANSITION",
+              "TOOL_CALL",
+              "AGENT_OUTPUT",
+              "ERROR"
+            ]
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "timestamp_utc",
+          "workflow_id",
+          "event_type",
+          "details"
+        ]
+      }
+    }
+  }
+}

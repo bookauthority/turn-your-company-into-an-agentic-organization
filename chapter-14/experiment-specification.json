@@ -1,0 +1,481 @@
+{
+  "experiment_id": "exp-014-operate-monitor-improve-mas-v1",
+  "hypothesis": "For a production multi-agent workflow handling operational tickets, introducing SRE-style observability (SLIs/SLOs, dashboards, alerts) plus a controlled prompt/tool tuning loop will (a) reduce user-flagged error rate and regression frequency, and (b) maintain or improve throughput and latency within defined SLOs, compared with an equivalent deployment that logs only raw events and does ad-hoc, non-metric-driven tuning.",
+  "baseline": {
+    "description": "Multi-agent workflow in production with minimal observability and ad-hoc improvements.",
+    "characteristics": [
+      "Multi-agent orchestrator manages a simple operations workflow (e.g., internal IT or CX ticket triage and resolution).",
+      "Logging limited to raw event logs (e.g., JSON lines with timestamps, agent name, action) stored in a database or object store, without derived SLIs or structured evaluation.",
+      "No explicit SLIs/SLOs or error budgets; success judged qualitatively or via occasional manual report pulls.",
+      "No real-time alerts; issues are discovered via user complaints or periodic spot-checks.",
+      "Changes to prompts, tools, or routing are made manually and reactively, without A/B testing or canaries.",
+      "One static prompt/workflow configuration deployed to all traffic (no varianting).",
+      "User feedback is captured only via informal channels (e.g., email/Slack complaints) and not systematically tied to specific agent runs."
+    ],
+    "implementation_sketch": {
+      "orchestrator": "Python service using a task queue (e.g., Redis, RabbitMQ, or in-memory for local runs) to route tickets to 2\u20133 agents (router, resolver, reviewer).",
+      "agents": [
+        "router_agent: classifies incoming requests and assigns category/priority.",
+        "resolver_agent: proposes actions or responses using tools (e.g., knowledge base search) and LLM calls.",
+        "reviewer_agent: optional final check that approves/edits responses."
+      ],
+      "logging": "Append-only log (e.g., Postgres table or JSONL file) for each run_id with agent_name, step_index, raw_payload, timestamp, and status.",
+      "deployment_mode": "Single environment (`prod-like`) processing all incoming workloads with one fixed configuration."
+    }
+  },
+  "treatment": {
+    "description": "Same multi-agent workflow with explicit SLIs/SLOs, dashboards, alerting, and a structured, experiment-driven improvement loop (canaries and A/B tests) for prompts/tools/routing.",
+    "additions_over_baseline": [
+      "Defined SLIs for the workflow, computed from logs and feedback, e.g.:",
+      "  - `sli_success_rate`: share of agent sessions that complete without user override or critical error.",
+      "  - `sli_user_flag_rate`: share of sessions explicitly flagged as incorrect or low quality.",
+      "  - `sli_latency_p95`: 95th percentile end-to-end latency.",
+      "  - `sli_handoff_rate`: share of sessions escalated to humans.",
+      "SLOs and error budgets derived from SLIs, e.g.:",
+      "  - `SLO_success_rate`: >= 0.92 over rolling 7 days (error budget <= 8% unsuccessful).",
+      "  - `SLO_user_flag_rate`: <= 0.05 over rolling 7 days.",
+      "  - `SLO_latency_p95`: <= 30 seconds.",
+      "Streaming of key metrics into a time-series store (e.g., Prometheus/Influx/Postgres rollups) and a dashboard (e.g., Grafana/Metabase).",
+      "Automated alerts (e.g., email/Slack/webhook) triggered when SLOs are threatened (e.g., breach of 25\u201350% of error budget within 24h, or latency p95 above threshold).",
+      "Structured feedback capture per run_id: user flags (thumbs up/down), correction text, and overrides stored in a feedback table.",
+      "Experiment framework for online changes:",
+      "  - Canary releases: route a small percentage of traffic (e.g., 5\u201310%) to a new config variant; auto-rollback if SLIs degrade beyond guardrail thresholds.",
+      "  - A/B tests: split traffic between baseline config and tuned config and measure relative performance using the same SLIs.",
+      "Systematic prompt and tool tuning driven by observed metrics and labeled errors; each new config is versioned and tied to experiment IDs.",
+      "Improvement backlog that ingests metric anomalies, frequent error patterns, and user feedback, prioritized by impact and effort."
+    ],
+    "implementation_sketch": {
+      "orchestrator": "Same as baseline, extended with an experiment router layer that assigns each incoming ticket to a configuration arm (control or variant) based on experiment definitions.",
+      "config_variants": [
+        "control_v1: identical to baseline prompts/tools/workflows.",
+        "tuned_v2: improved prompts (e.g., clearer instructions, added chain-of-thought in tools-only channels), refined routing rules, or additional verification tool calls."
+      ],
+      "metrics_pipeline": "Background worker or scheduled job that aggregates raw logs into metrics tables per 5-min or 1-hour bucket, tagged by variant_id and environment.",
+      "alerting": "Stateless service or cron job evaluating rolling windows of SLIs vs. SLOs and triggering notifications when thresholds are breached.",
+      "dashboards": "Pre-built charts (e.g., success_rate, user_flag_rate, latency_p95, handoff_rate, volume) broken down by variant_id, environment, and ticket category."
+    }
+  },
+  "workloads": [
+    {
+      "name": "synthetic_ticket_stream",
+      "description": "Scripted generator of internal support or operations tickets to provide a reproducible, controllable workload for both baseline and treatment.",
+      "characteristics": [
+        "Tickets represented as JSON objects with fields: ticket_id, created_at, channel, category, difficulty, language, and text.",
+        "Categories (e.g., 'password_reset', 'access_request', 'billing_question', 'bug_report'), each with templates and controlled difficulty levels.",
+        "Ground truth labels for required_action and correct_response exist so that offline accuracy can be computed in addition to online user feedback.",
+        "Arrival process: default Poisson or fixed-rate process (e.g., N tickets per minute) to simulate varying load levels.",
+        "Random seed control to generate identical sequences of tickets for repeated experiments."
+      ],
+      "generation_outline": "Provide a Python script in the repo that accepts seed, rate, duration, and output_path, and emits a newline-delimited JSON file of tickets."
+    },
+    {
+      "name": "human_in_the_loop_feedback",
+      "description": "Optional workload using real users or annotators reviewing agent outputs and flagging errors.",
+      "characteristics": [
+        "Same ticket schema as synthetic stream but tickets can be sourced from a sandboxed real system (e.g., exported IT/CX tickets with anonymization).",
+        "Annotators review agent outputs and label correctness (correct, partially_correct, incorrect), provide corrections, and mark severity (low, medium, high).",
+        "Used to validate that SLI-based metrics correspond to actual user-perceived quality and to refine evaluation heuristics."
+      ],
+      "notes": "This workload is more variable and not fully deterministic; it complements, but does not replace, the synthetic workload for strict reproducibility."
+    }
+  ],
+  "controls": {
+    "shared_controls": [
+      "Use the same orchestrator codebase, agent graph, and underlying LLM model/version for baseline and treatment during any specific run (no implicit model upgrades).",
+      "Use the same synthetic_ticket_stream with a fixed random seed and identical ticket sequences for comparability in offline replay experiments.",
+      "Process equivalent workload volumes and category mixes in baseline and treatment arms over the same wall-clock period for online experiments.",
+      "Keep hardware and infrastructure constant across arms (same instance types, concurrency limits, and network conditions as far as possible).",
+      "Disable any auto-tuning or vendor-side experimentation that could confound results (e.g., turn off unspecified model switching in provider dashboards where possible)."
+    ],
+    "experiment_routing_controls": [
+      "Use a deterministic experiment assignment function (e.g., hash(ticket_id) mod 100) to ensure stable traffic splits and avoid per-user flapping across arms.",
+      "Ensure minimum sample sizes per arm (e.g., at least 1,000 tickets per variant in a given experiment) before drawing conclusions.",
+      "Freeze configuration for each variant for the duration of a given experiment; version changes create new variant_ids."
+    ],
+    "data_quality_controls": [
+      "Validate all incoming tickets and agent outputs conform to schemas before processing (reject or quarantine malformed entries).",
+      "Backfill metrics from raw logs to validate that online metric computations match offline recomputations.",
+      "Guard against leakage of ground truth labels to agents (labels must not be part of agent-visible context during experiments)."
+    ]
+  },
+  "metrics": [
+    {
+      "name": "success_rate",
+      "unit": "fraction_of_sessions",
+      "definition": "Number of sessions that complete without user override, critical error, or escalation / total sessions. Computed per variant and time window."
+    },
+    {
+      "name": "user_flag_rate",
+      "unit": "fraction_of_sessions",
+      "definition": "Number of sessions where a user explicitly flags output as incorrect or low quality / total sessions. Requires feedback UI or annotation."
+    },
+    {
+      "name": "handoff_rate",
+      "unit": "fraction_of_sessions",
+      "definition": "Number of sessions escalated to a human (reviewer intervention or manual takeover) / total sessions."
+    },
+    {
+      "name": "latency_p50",
+      "unit": "seconds",
+      "definition": "Median end-to-end time from ticket creation to agent-produced response."
+    },
+    {
+      "name": "latency_p95",
+      "unit": "seconds",
+      "definition": "95th percentile end-to-end time from ticket creation to agent-produced response."
+    },
+    {
+      "name": "throughput",
+      "unit": "tickets_per_minute",
+      "definition": "Number of completed sessions per minute processed by the system under a given load."
+    },
+    {
+      "name": "offline_accuracy",
+      "unit": "fraction_of_sessions",
+      "definition": "For synthetic tickets with ground truth actions/responses, share of sessions where agent output matches ground truth (exact or relaxed criteria)."
+    },
+    {
+      "name": "prompt_tool_change_frequency",
+      "unit": "changes_per_week",
+      "definition": "Number of prompt, tool, or routing configuration versions promoted to production per calendar week."
+    },
+    {
+      "name": "regression_incidents",
+      "unit": "count_per_week",
+      "definition": "Count of distinct incidents where a config change caused a statistically significant degradation in any primary SLI (e.g., success_rate, user_flag_rate) beyond defined guardrails, leading to a rollback or hotfix."
+    },
+    {
+      "name": "alert_volume",
+      "unit": "alerts_per_week",
+      "definition": "Number of SLO or guardrail alerts raised per week, used to measure noise vs. signal in monitoring configuration."
+    },
+    {
+      "name": "engineer_time_on_triage",
+      "unit": "person_hours_per_week",
+      "definition": "Estimated engineering/operations time spent manually investigating production issues with the agent system."
+    }
+  ],
+  "success_criteria": {
+    "primary": [
+      "Treatment success_rate is at least 3 percentage points higher than baseline (e.g., from 0.90 to >= 0.93) with 95% confidence over a comparable workload.",
+      "Treatment user_flag_rate is at least 30% lower relative to baseline (e.g., from 0.10 to <= 0.07) without violating latency_p95 SLO."
+    ],
+    "secondary": [
+      "Treatment latency_p95 is not worse than baseline by more than 20% (e.g., if baseline is 25s, treatment <= 30s) OR any increase is justified by materially better success_rate/user_flag_rate.",
+      "Treatment regression_incidents per week are lower than or equal to baseline, even as prompt_tool_change_frequency increases or remains similar.",
+      "Alert_volume is in a manageable range (e.g., 1\u201310 actionable alerts/week) with low proportion of false positives, qualitatively assessed.",
+      "Engineer_time_on_triage does not increase and ideally decreases by at least 20% compared to baseline after ramp-up."
+    ],
+    "operational_SLO_examples": [
+      "SLO_success_rate: >= 0.92 over rolling 7 days.",
+      "SLO_user_flag_rate: <= 0.05 over rolling 7 days.",
+      "SLO_latency_p95: <= 30 seconds over rolling 7 days.",
+      "Error_budget_for_success_rate: <= 8% unsuccessful sessions per 30-day window."
+    ]
+  },
+  "failure_modes": [
+    {
+      "name": "metrics_regress_without_detection",
+      "description": "Agent performance degrades (e.g., rising user_flag_rate) but monitoring and alerts fail to detect the issue or do so too late.",
+      "causes": [
+        "SLIs not correctly computed or thresholds too loose.",
+        "Alerting windows too coarse to capture fast regressions.",
+        "Metrics pipeline failures (e.g., missing data, mislabeling of variant_id)."
+      ],
+      "mitigations": [
+        "Run regular metric integrity checks (e.g., compare aggregate counts between logs and metrics tables).",
+        "Start with conservative (tighter) SLO thresholds and adjust based on observed noise.",
+        "Implement synthetic canary checks that send known tickets with expected outcomes at a fixed cadence."
+      ]
+    },
+    {
+      "name": "noisy_or_misleading_SLIs",
+      "description": "SLIs do not correlate well with actual user satisfaction or business outcomes, leading to optimization in the wrong direction.",
+      "causes": [
+        "Proxy metrics (e.g., handoff_rate) used as quality stands-in without validation.",
+        "Low engagement with feedback tools; silent dissatisfaction not captured.",
+        "Synthetic workload that is not representative of real production tickets."
+      ],
+      "mitigations": [
+        "Correlate SLIs with human_in_the_loop_feedback and, where possible, business KPIs (e.g., CSAT, resolution time).",
+        "Periodically sample sessions for manual review and compare qualitative judgment vs. SLI classification.",
+        "Iteratively refine SLIs and consider multiple complementary metrics rather than a single one."
+      ]
+    },
+    {
+      "name": "experiment_contamination",
+      "description": "Traffic or configuration mixing leads to biased comparisons between baseline and treatment variants.",
+      "causes": [
+        "Users or tickets switching variants mid-session due to non-stable assignment.",
+        "Configuration changes applied mid-experiment without re-versioning.",
+        "Shared downstream systems that apply variant-specific rules inconsistently."
+      ],
+      "mitigations": [
+        "Use stable assignment based on ticket_id or user_id hashing.",
+        "Freeze configuration for each variant_id during experiments; create new variant_ids for changes.",
+        "Log variant_id and config_version with every event; exclude sessions with mid-stream variant changes during analysis."
+      ]
+    },
+    {
+      "name": "overfitting_to_synthetic_workloads",
+      "description": "System is tuned to perform well on synthetic tickets but does not generalize to messy, real-world tickets.",
+      "causes": [
+        "Synthetic dataset too clean, narrow, or patternable.",
+        "Prompts inadvertently specialized to synthetic phrasing.",
+        "Lack of diverse real feedback incorporated into training loop."
+      ],
+      "mitigations": [
+        "Periodically run experiments on real, anonymized datasets with human_in_the_loop_feedback.",
+        "Increase variability and noise in synthetic generator (typos, mixed languages, ambiguous phrasing).",
+        "Validate patterns on at least two distinct workloads (e.g., IT tickets and CX tickets) before codifying them broadly."
+      ]
+    },
+    {
+      "name": "alert_fatigue",
+      "description": "Too many non-actionable alerts cause operators to ignore or mute notifications, undermining reliability.",
+      "causes": [
+        "Overly sensitive thresholds or short evaluation windows.",
+        "Alerts triggered on raw metrics rather than SLO-focused aggregates.",
+        "Multiple near-duplicate alerts for the same underlying issue."
+      ],
+      "mitigations": [
+        "Prioritize a small set of SLO-based alerts for paging; use dashboards for secondary metrics.",
+        "Implement alert deduplication and suppression windows.",
+        "Regularly review alert history and retire or tune noisy conditions."
+      ]
+    },
+    {
+      "name": "unsafe_or_unvetted_prompt_tool_changes",
+      "description": "New prompts or tools deployed via experimentation introduce previously unseen failure modes (e.g., policy violations or security issues).",
+      "causes": [
+        "Insufficient guardrails or review before enabling variants.",
+        "Lack of policy-compliance checks in evaluation pipeline.",
+        "Overreliance on SLIs that do not explicitly capture safety violations."
+      ],
+      "mitigations": [
+        "Require human review and approval for new variants before canary rollout.",
+        "Include safety-focused checks (e.g., policy classifier, PII detection) as pre-deployment tests and as part of SLIs.",
+        "Limit canary traffic share and scope (e.g., safer categories only) until safety metrics are validated."
+      ]
+    }
+  ],
+  "required_environment": {
+    "infrastructure": [
+      "Runtime environment capable of running Python 3.10+ services (e.g., local Docker, Kubernetes, or a simple VM).",
+      "Access to at least one LLM endpoint (cloud API or self-hosted) with sufficient rate limits to handle test workloads.",
+      "Message queue or simple async processing mechanism (e.g., Redis, RabbitMQ, or in-process async tasks) for orchestrating agents.",
+      "Database for logs, metrics, and feedback (e.g., Postgres or SQLite for minimal setups).",
+      "Dashboarding/visualization tool (e.g., Grafana, Metabase, Superset, or even a Jupyter notebook for initial experiments).",
+      "Job scheduler or cron-like mechanism for periodic metric aggregation and SLO evaluation."
+    ],
+    "software_dependencies": [
+      "Python libraries for HTTP and queues (e.g., requests/httpx, redis/pika).",
+      "ORM or database client (e.g., SQLAlchemy, psycopg2, sqlite3).",
+      "Metrics and logging libraries (e.g., structlog/loguru, prometheus_client or custom metric aggregator).",
+      "Experiment configuration management (e.g., YAML/JSON-based configs parsed by the orchestrator).",
+      "Optional: Containerization (Docker) for repeatable local and CI runs."
+    ],
+    "datasets": [
+      "Synthetic_ticket_generator script with seed and parameter controls, stored in the repository.",
+      "Optional real or anonymized ticket datasets for advanced validation, clearly separated from the synthetic workload and documented regarding privacy constraints."
+    ],
+    "configurations": [
+      "Baseline config file defining the default prompts, tools, and routing logic.",
+      "Treatment/tuned config files defining variant prompts, tools, routing, and guardrail policies.",
+      "SLO definition file listing SLIs, SLO thresholds, evaluation windows, and alerting channels.",
+      "Experiment definition file specifying experiment_id, variants, traffic splits, and start/end dates."
+    ]
+  },
+  "run_instructions": [
+    "1. Clone the repository and set up environment",
+    "   - `git clone https://github.com/bookauthority/turn-your-company-into-an-agentic-organization.git`",
+    "   - `cd turn-your-company-into-an-agentic-organization/experiments/014_operate_monitor_improve_mas`",
+    "   - Create and activate a Python virtual environment.",
+    "   - Install dependencies: `pip install -r requirements.txt`.",
+    "   - Configure LLM API keys and database connection strings via environment variables or a local `.env` file (never commit secrets).",
+    "2. Initialize databases and schemas",
+    "   - Run the migration or schema script to create tables for: `runs`, `events`, `metrics`, `feedback`, `experiments`, and `config_versions`.",
+    "   - Verify connectivity by running a short health-check script that writes and reads a test record.",
+    "3. Generate a synthetic workload",
+    "   - Execute the workload generator with fixed seed and parameters, for example:",
+    "     `python generate_synthetic_tickets.py --seed 42 --rate 5 --duration-minutes 60 --output tickets_seed42.jsonl`",
+    "   - Inspect the first few lines of the output file to confirm ticket structure and category distribution.",
+    "4. Run the baseline experiment (no advanced monitoring or tuning framework enabled)",
+    "   - Configure the orchestrator to use `config/baseline_v1.yml` (or equivalent) and disable experiment routing.",
+    "   - Start the orchestrator service.",
+    "   - Replay the synthetic tickets into the system:",
+    "     `python replay_tickets.py --input tickets_seed42.jsonl --mode baseline --concurrency 5`",
+    "   - Allow the system to complete processing all tickets; monitor logs to ensure there are no unhandled errors.",
+    "   - After completion, run the baseline metrics aggregation script:",
+    "     `python compute_metrics.py --mode baseline --variant-id control_v1 --window all`",
+    "   - Export metrics to a JSON or CSV file, e.g., `metrics_baseline_control_v1.json`.",
+    "5. Enable treatment features (monitoring, SLOs, alerts, and experiment framework)",
+    "   - Deploy or enable the metrics aggregation pipeline and verify that SLIs (success_rate, user_flag_rate, latency_p95, etc.) are computed per run and per variant.",
+    "   - Configure SLOs and alert thresholds in `config/slo_definitions.yml`.",
+    "   - Set up dashboards by importing pre-defined dashboards or pointing your dashboarding tool to the metrics tables.",
+    "   - Configure alerting endpoints (e.g., Slack webhook URL, email distribution list) in `config/alerting.yml`.",
+    "6. Run a canary release of a tuned variant (treatment)",
+    "   - Create or adapt a tuned configuration `config/tuned_v2.yml` (prompt, tool, or routing improvements).",
+    "   - Register an experiment in `config/experiments.yml` with a small canary traffic share, for example:",
+    "     - experiment_id: `exp_014_canary_v2`",
+    "     - variants: `control_v1` (90%), `tuned_v2` (10%)",
+    "   - Start the orchestrator with experiment routing enabled.",
+    "   - Replay the same synthetic tickets or generate a new workload with the same seed and volume profile:",
+    "     `python replay_tickets.py --input tickets_seed42.jsonl --mode experiment --concurrency 5`",
+    "   - Monitor dashboards and logs during the run; confirm that metrics are reported separately for `control_v1` and `tuned_v2`.",
+    "   - Allow the canary to complete sufficient volume (e.g., at least 1,000 tickets in `tuned_v2`) before diagnosing results.",
+    "7. Evaluate canary guardrails and escalate to A/B test",
+    "   - Run metrics analysis:",
+    "     `python compute_metrics.py --mode experiment --experiment-id exp_014_canary_v2 --window all`",
+    "   - Compare SLIs for `control_v1` vs. `tuned_v2` against guardrail thresholds (e.g., user_flag_rate not worse by more than X%, latency_p95 not above SLO).",
+    "   - If metrics are within guardrails and show improvement or parity, update `config/experiments.yml` for an A/B test with a larger traffic share (e.g., 50/50).",
+    "   - Re-run the experiment and recompute metrics after hitting target sample size.",
+    "8. Collect and analyze user or annotator feedback (optional but recommended)",
+    "   - For a subset of runs, route agent outputs to human reviewers via a simple web UI or annotation script.",
+    "   - Store their correctness labels and comments in the `feedback` table linked by run_id and variant_id.",
+    "   - Run the evaluation script to correlate SLIs with human-labeled correctness:",
+    "     `python analyze_feedback_correlation.py --experiment-id exp_014_canary_v2`",
+    "   - Adjust SLI definitions or thresholds if they are shown to be poorly correlated with actual quality.",
+    "9. Build and prioritize an improvement backlog",
+    "   - Run the error cluster analysis script to identify frequent failure patterns and categories:",
+    "     `python cluster_errors.py --experiment-id exp_014_canary_v2`",
+    "   - Export a ranked list of candidate improvements by estimated impact and frequency.",
+    "   - Use this output to populate or update an improvement backlog (e.g., in a CSV file or your issue tracker).",
+    "10. Document results and prepare for replication",
+    "   - Save all configuration files (baseline, tuned, SLOs, experiments) with clear version tags.",
+    "   - Export final metrics, including confidence intervals where computed, to JSON files.",
+    "   - Record any environment specifics (model versions, hardware specs, rate limits) in a README within the experiment folder.",
+    "   - Optionally commit sanitized configuration and non-secret outputs back to the repository for others to reproduce, subject to your internal policies."
+  ],
+  "evidence_schema": {
+    "description": "Schema for storing and analyzing evidence from the experiment in a structured, reproducible manner.",
+    "entities": {
+      "run": {
+        "primary_key": "run_id",
+        "fields": {
+          "run_id": "string, unique identifier for a single end-to-end ticket handling session.",
+          "ticket_id": "string, identifier of the ticket from synthetic or real workload.",
+          "experiment_id": "string, e.g., 'exp_014_canary_v2'; null if no experiment.",
+          "variant_id": "string, e.g., 'control_v1', 'tuned_v2'.",
+          "config_version": "string, hash or semantic version of prompts/tools/routing used.",
+          "start_time": "datetime, when processing of this ticket began.",
+          "end_time": "datetime, when processing completed or was aborted.",
+          "final_status": "enum: ['success', 'handoff', 'error', 'timeout'].",
+          "environment": "string, e.g., 'local', 'staging', 'prod-like'."
+        }
+      },
+      "event": {
+        "primary_key": "event_id",
+        "fields": {
+          "event_id": "string, unique event identifier.",
+          "run_id": "string, foreign key to run.run_id.",
+          "timestamp": "datetime, event occurrence time.",
+          "agent_name": "string, name of the agent (router, resolver, reviewer, etc.).",
+          "step_index": "integer, sequence order within the run.",
+          "event_type": "string, e.g., 'llm_call', 'tool_call', 'tool_result', 'decision', 'error'.",
+          "payload_summary": "string or JSON, high-level description without sensitive content.",
+          "latency_ms": "integer, time spent for this step (if applicable).",
+          "variant_id": "string, redundancy for faster querying; should match run.variant_id."
+        }
+      },
+      "feedback": {
+        "primary_key": "feedback_id",
+        "fields": {
+          "feedback_id": "string, unique feedback record id.",
+          "run_id": "string, foreign key to run.run_id.",
+          "user_id": "string, optional anonymized user identifier.",
+          "timestamp": "datetime, when feedback was provided.",
+          "flag": "enum: ['up', 'down', 'none'], indicating explicit user reaction.",
+          "quality_label": "enum: ['correct', 'partially_correct', 'incorrect', 'not_assessed'], from annotator or user.",
+          "severity": "enum: ['low', 'medium', 'high'], indicating business impact.",
+          "correction_text": "string, optional corrected answer or instructions.",
+          "notes": "string, optional free-text comments.",
+          "source": "enum: ['end_user', 'internal_annotator', 'auto_detector']."
+        }
+      },
+      "offline_ground_truth": {
+        "primary_key": "ticket_id",
+        "fields": {
+          "ticket_id": "string, matches run.ticket_id.",
+          "category": "string, ticket category defined in generator.",
+          "difficulty": "string or int, e.g., ['easy', 'medium', 'hard'].",
+          "required_action": "JSON, structured representation of expected agent actions.",
+          "reference_response": "string, reference text or template considered correct.",
+          "evaluation_method": "enum: ['exact_match', 'semantic_similarity', 'rule_based'], describing how offline_accuracy should be computed."
+        }
+      },
+      "metric_point": {
+        "primary_key": "metric_point_id",
+        "fields": {
+          "metric_point_id": "string, unique metric entry id.",
+          "timestamp": "datetime, typically bucket midpoint.",
+          "experiment_id": "string, optional, associated experiment.",
+          "variant_id": "string, variant this metric refers to.",
+          "metric_name": "string, one of the metric names defined above (e.g., 'success_rate').",
+          "value": "float, numeric value of the metric.",
+          "window_seconds": "integer, aggregation window size (e.g., 300 for 5 minutes, 86400 for daily).",
+          "sample_size": "integer, number of runs underlying this metric point."
+        }
+      },
+      "slo_evaluation": {
+        "primary_key": "slo_eval_id",
+        "fields": {
+          "slo_eval_id": "string, unique id for each SLO check.",
+          "timestamp": "datetime, when the evaluation was performed.",
+          "slo_name": "string, e.g., 'SLO_success_rate'.",
+          "sli_name": "string, associated SLI metric (e.g., 'success_rate').",
+          "experiment_id": "string, optional, focus experiment; null for global SLOs.",
+          "variant_id": "string, optional; null for aggregated SLOs across variants.",
+          "window_start": "datetime, start of evaluation window.",
+          "window_end": "datetime, end of evaluation window.",
+          "value": "float, observed SLI value in this window.",
+          "target": "float, SLO target value.",
+          "breached": "boolean, true if SLO is violated within this evaluation.",
+          "error_budget_consumed": "float, fraction of error budget used in this window (0.0\u20131.0)."
+        }
+      },
+      "alert": {
+        "primary_key": "alert_id",
+        "fields": {
+          "alert_id": "string, unique alert identifier.",
+          "timestamp": "datetime, when alert was raised.",
+          "severity": "enum: ['info', 'warning', 'critical'].",
+          "slo_eval_id": "string, foreign key to slo_evaluation.slo_eval_id, if alert is SLO-based.",
+          "metric_name": "string, metric that triggered the alert (if not SLO-based).",
+          "value": "float, observed metric value at alert time.",
+          "threshold": "float, threshold that was crossed.",
+          "message": "string, human-readable description of the alert.",
+          "status": "enum: ['open', 'acknowledged', 'resolved'], lifecycle state of the alert.",
+          "resolution_notes": "string, description of the root cause and actions taken."
+        }
+      },
+      "config_version": {
+        "primary_key": "config_version",
+        "fields": {
+          "config_version": "string, unique identifier (e.g., semantic version or hash).",
+          "variant_id": "string, associated variant id.",
+          "created_at": "datetime, when the configuration was created.",
+          "description": "string, short summary of changes vs. previous version.",
+          "prompts": "JSON, key prompt snippets or references (no secrets).",
+          "tools": "JSON, list of available tools and their configuration (e.g., endpoints, timeouts).",
+          "routing_rules": "JSON, description of routing and orchestration logic.",
+          "safety_policies": "JSON, description of safety and guardrail rules applied."
+        }
+      },
+      "experiment": {
+        "primary_key": "experiment_id",
+        "fields": {
+          "experiment_id": "string, identifier (e.g., 'exp_014_canary_v2').",
+          "description": "string, purpose and design of the experiment.",
+          "start_time": "datetime, actual or planned start.",
+          "end_time": "datetime, actual or planned end; null if ongoing.",
+          "variants": "JSON, mapping of variant_id to traffic share, e.g., {'control_v1': 0.9, 'tuned_v2': 0.1}.",
+          "status": "enum: ['planned', 'running', 'completed', 'aborted'].",
+          "primary_metrics": "JSON, list of metrics monitored for decision-making.",
+          "decision": "enum: ['promote_variant', 'rollback', 'inconclusive', 'ongoing'], outcome of the experiment.",
+          "decision_notes": "string, explanation of how the decision was reached, referencing metric evidence."
+        }
+      }
+    }
+  }
+}

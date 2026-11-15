@@ -1,0 +1,720 @@
+{
+  "experiment_id": "exp-ch08-cx-agentic-support-v1",
+  "hypothesis": "For a mid-market B2B SaaS support operation, routing a subset of incoming tickets through a governed multi-agent support workflow (triage, resolver, knowledge, and quality-review agents) will reduce average handle time and cost per ticket by at least 25% while maintaining or improving first-contact resolution rate and CSAT, compared with a human-only tiered queue, under equivalent ticket mix and operating hours.",
+  "baseline": {
+    "description": "Current human-only customer support operation using standard tiered queues (Tier 1 / Tier 2) across email and chat, integrated with a ticketing system (e.g., Zendesk, Freshdesk, or a synthetic equivalent).",
+    "queue_design": {
+      "channels": [
+        "Email support@company.example",
+        "Web form embedded in app",
+        "In-app chat widget (synchronous where possible, async fallback)"
+      ],
+      "routing_logic": "All tickets land in a single Level 1 (L1) inbox. L1 agents manually triage, respond, and either resolve or escalate to Level 2 (L2) based on perceived complexity and permissions.",
+      "tiers": [
+        {
+          "name": "Tier 1 (L1)",
+          "staff_role": "Generalist support reps",
+          "permissions": "Read/write to tickets, access to KB, limited account changes, no billing changes.",
+          "operating_hours": "Business hours coverage (e.g., 9am\u20136pm in target time zone)."
+        },
+        {
+          "name": "Tier 2 (L2)",
+          "staff_role": "Senior support/technical specialists",
+          "permissions": "All L1 permissions plus advanced account configuration, API troubleshooting, and limited billing adjustments.",
+          "operating_hours": "Same as L1 for this experiment; off-hours tickets are queued."
+        }
+      ]
+    },
+    "human_workflow": {
+      "steps": [
+        "Customer submits ticket via email/chat/web form.",
+        "Ticketing system creates a ticket with metadata (channel, timestamp, customer ID, subject, body).",
+        "L1 agent manually picks ticket from the queue.",
+        "Agent reads context (recent tickets, CRM info) and categorizes the ticket (issue type, priority, product area) using dropdowns in the ticketing UI.",
+        "Agent searches internal knowledge base or prior tickets as needed.",
+        "Agent writes a free-form response, optionally inserting macros or templates.",
+        "If unable to resolve, agent escalates the ticket to L2 or another team with internal comments.",
+        "Ticket is resolved and closed by human agents; optionally a CSAT survey is triggered on closure."
+      ],
+      "guardrails": {
+        "tone_guidelines": "Human agents trained to follow written support style guidelines (professional, concise, empathetic).",
+        "policy_compliance": "Relies on human training, occasional QA review, and manager spot-checks; no systematic automated policy enforcement.",
+        "escalation_criteria": "Informal or defined in playbooks, but applied inconsistently; documented only in SOPs."
+      }
+    },
+    "baseline_metrics_collection": {
+      "period": "Minimum 4 weeks of historical data prior to experiment, or synthetic rerun of historical tickets through human-only queues.",
+      "required_events": [
+        "Ticket created",
+        "First human assignment",
+        "First human reply",
+        "Each status change (open, pending, on-hold, solved/closed)",
+        "Each agent handoff (L1->L2, queue moves)",
+        "CSAT survey send and response",
+        "Any refunds/credits or policy-relevant actions taken"
+      ]
+    }
+  },
+  "treatment": {
+    "description": "Agentic support queue in which incoming tickets are handled by a coordinated set of support agents (triage, resolver, knowledge, and quality-review) integrated with the same ticketing/CRM stack, with human supervisors handling escalations and spot-checks.",
+    "agent_roles": {
+      "triage_agent": {
+        "purpose": "Classify, prioritize, and route tickets; detect spam; suggest immediate auto-responses when confidence is high.",
+        "inputs": [
+          "Raw ticket text (subject, body)",
+          "Channel metadata",
+          "Customer profile from CRM",
+          "Past ticket history for the customer"
+        ],
+        "outputs": [
+          "Issue category",
+          "Subcategory",
+          "Priority",
+          "Initial sentiment score",
+          "Routing decision: auto-resolve candidate vs. assign to resolver agent vs. escalate directly to human",
+          "Policy flags (potential abuse, legal risk, security issue)"
+        ]
+      },
+      "knowledge_agent": {
+        "purpose": "Retrieve relevant KB articles, prior tickets, FAQ entries, and product docs via RAG to support resolution.",
+        "tools": [
+          "Vector search index over KB",
+          "Full-text search over historical tickets",
+          "Metadata filters (product, feature, version)"
+        ],
+        "outputs": [
+          "Top-k relevant documents with snippets",
+          "Structured summary of relevant instructions/policies"
+        ]
+      },
+      "resolver_agent": {
+        "purpose": "Draft responses and resolution steps using KB context, propose ticket updates (status, tags), and recommend actions.",
+        "inputs": [
+          "Ticket details",
+          "Triage classification and routing metadata",
+          "Knowledge agent results"
+        ],
+        "outputs": [
+          "Draft reply to customer (structured: greeting, body, steps, closing)",
+          "Structured actions: labels, status change, suggested escalation, recommended macros",
+          "Confidence score and auto-send eligibility flag"
+        ],
+        "constraints": [
+          "Must not make irreversible account changes or financial promises; only propose them.",
+          "Must adhere to tone and policy templates enforced via system prompts and validation tools."
+        ]
+      },
+      "quality_review_agent": {
+        "purpose": "Check drafted responses for tone, policy compliance, safety, and correctness before auto-sending or surfacing to human.",
+        "checks": [
+          "Prohibited phrases/policies (credits, refunds, SLAs) against configuration rules.",
+          "Tone (professional, non-discriminatory, no speculative commitments).",
+          "Hallucination guardrails (no unsupported claims; cross-checks with KB snippets)."
+        ],
+        "outputs": [
+          "Approve for auto-send",
+          "Require human review",
+          "Reject and request re-draft with reasons"
+        ]
+      }
+    },
+    "agentic_workflow": {
+      "steps": [
+        "Ticket arrives in the system as in the baseline.",
+        "Integration service posts normalized ticket payload to an orchestration layer (e.g., via message queue or webhook).",
+        "Triage agent runs and assigns classification, priority, and routing decision.",
+        "If routed to agentic path:",
+        "  a. Knowledge agent retrieves context from KB and historical tickets.",
+        "  b. Resolver agent drafts a proposed reply and structured actions.",
+        "  c. Quality-review agent validates the draft; if low risk and high confidence, auto-sends; otherwise, routes to human review inbox with suggested reply attached.",
+        "If triage detects high-risk categories (billing disputes, legal threats, security incidents), ticket is routed to human-only queue with agentic suggestions disabled or read-only.",
+        "All agent steps, intermediate outputs, and decisions are logged in an audit trail attached to the ticket.",
+        "Human supervisors can override, edit, or block agent actions; this feedback is logged and used for evaluation."
+      ],
+      "guardrails": {
+        "tone": "Enforced via both prompt instructions and a deterministic tone-checker (rule-based or LLM with strict schema) as part of quality-review.",
+        "policy_compliance": "Formalized policy rules encoded as machine-checkable constraints (e.g., no refunds above $X, no changes to contract terms, no data shared beyond configured fields).",
+        "escalation_criteria": "Explicit lists of topics and patterns (keywords, regexes, classifier tags) that force human review or direct escalation (e.g., 'breach', 'lawsuit', 'GDPR', 'HIPAA')."
+      }
+    },
+    "integration_changes": {
+      "ticketing": "Webhook or polling integration from the ticketing system into the orchestration API, plus status and comment update API calls back into tickets.",
+      "crm": "Read-only access to basic customer attributes (plan, MRR, tenure, region). No PII beyond what is already visible to human agents.",
+      "email_chat": "Agentic replies posted back via ticketing APIs; no direct SMTP/IM integration required if ticketing system already handles outbound messages."
+    }
+  },
+  "workloads": [
+    {
+      "name": "historical_replay_workload",
+      "description": "Offline replay of previously resolved tickets through both human-only (as-logged) and agentic workflows to compare outputs and simulate impact without affecting live customers.",
+      "data_source": {
+        "option_a_real": "Anonymized export of 10,000\u201350,000 historical tickets with full timelines from the production ticketing system.",
+        "option_b_synthetic": "Synthetic generator that creates tickets for common issues (login, billing question, feature how-to, bug report, integration setup) based on a predefined taxonomy and seeded templates."
+      },
+      "sampling": {
+        "time_window": "At least 4 consecutive weeks, excluding major incident periods if possible.",
+        "stratification": "Stratify by channel (email/chat/web), customer segment (SMB/mid-market/enterprise), and main issue category to match real distribution.",
+        "holdout_sets": "Reserve a 20% subset as a final evaluation set not used during configuration of prompts/guardrails."
+      },
+      "execution_mode": "Offline: for each ticket in the workload, reconstruct the initial state and run the agentic pipeline to propose responses and actions; compare against human final responses.",
+      "constraints": "No outbound messages are sent to customers; this is a shadow run."
+    },
+    {
+      "name": "live_ab_workload",
+      "description": "Online randomized controlled trial where new incoming tickets are randomly assigned to agentic vs. human-only handling under guardrails.",
+      "assignment": {
+        "unit": "Ticket (or conversation for chat).",
+        "randomization_scheme": "Bernoulli randomization at ticket creation time with configurable probability p for treatment (e.g., 0.3\u20130.5).",
+        "stratification": "Optional stratification by channel and customer plan to ensure balance in key segments."
+      },
+      "traffic_allocation": {
+        "phase_1": "10% treatment, 90% control for 3\u20135 days to validate safety and guardrails.",
+        "phase_2": "30\u201350% treatment, 50\u201370% control for main measurement period (at least 2\u20134 weeks).",
+        "exclusions": [
+          "High-risk categories always assigned to control or human-supervised agentic path.",
+          "VIP accounts can be excluded or kept at lower treatment fraction initially."
+        ]
+      },
+      "operational_constraints": {
+        "business_hours": "Initial experiment limited to staffed hours to ensure human escalations are promptly handled.",
+        "max_auto_send": "Cap fraction of treatment tickets that can receive auto-sent responses without human review (e.g., <= 40%) during early phases."
+      }
+    }
+  ],
+  "controls": {
+    "traffic_splitting": {
+      "mechanism": "Deterministic random assignment using ticket_id hash or an experiment service to avoid bias by agent selection.",
+      "invariance_checks": [
+        "Compare pre-treatment ticket volume per channel between arms.",
+        "Compare distribution of categories, priorities, and customer segments across control and treatment.",
+        "Ensure no major incident or new product launch occurs disproportionately in one arm."
+      ]
+    },
+    "agent_configuration_freeze": {
+      "description": "Prompt templates, model versions, routing thresholds, and guardrail policies must be frozen at the start of the main measurement window.",
+      "exceptions": "Critical safety fixes are allowed but must be documented with timestamps and considered in analysis."
+    },
+    "staffing_levels": {
+      "description": "Maintain equivalent or at least non-decreasing human staffing during the experiment relative to the baseline period.",
+      "constraint": "No intentional reduction in staff based solely on experimental treatment; otherwise results confound efficiency with staffing cuts."
+    },
+    "training_and_change_management": {
+      "human_agents": "All participating human agents receive training on how to supervise the agentic queue, provide feedback, and escalate safely.",
+      "blinding": "Agents need not be blinded to the experiment, but should not change process only for one arm; workflow differences must be enforced by the system, not ad hoc behavior."
+    },
+    "data_collection": {
+      "logging_requirements": [
+        "Arm assignment (control vs. treatment) stored with ticket.",
+        "Timestamps of all key events (creation, first response, each agent step, resolution).",
+        "Flags for human override, agent auto-reply, and agent suggestions that were rejected.",
+        "Customer satisfaction responses and any free-text survey comments."
+      ],
+      "privacy": "All logs must exclude or anonymize PII before export to the analysis environment."
+    }
+  },
+  "metrics": [
+    {
+      "name": "avg_first_response_time",
+      "unit": "minutes",
+      "definition": "Mean duration from ticket creation to first customer-visible reply (human or agent) within the experiment window.",
+      "scope": "Per arm (control vs. treatment), with breakdowns by channel and priority."
+    },
+    {
+      "name": "avg_handle_time_per_ticket",
+      "unit": "minutes",
+      "definition": "Mean total active handling time per ticket, including sum of all human work intervals plus estimated agent computation time converted into human-equivalent labor minutes.",
+      "scope": "Per arm; excludes waiting time between replies."
+    },
+    {
+      "name": "first_contact_resolution_rate",
+      "unit": "percentage",
+      "definition": "Proportion of tickets resolved without requiring a second separate interaction after the first substantive response, excluding automated acknowledgments.",
+      "scope": "Per arm; computed as tickets closed within a configured window (e.g., 48 hours) with exactly one customer-facing response thread."
+    },
+    {
+      "name": "csat_score",
+      "unit": "csat_points",
+      "definition": "Average CSAT score from post-resolution surveys on a 1\u20135 or 1\u201310 scale, normalized to a 0\u2013100 index if necessary.",
+      "scope": "Per arm; include response rate as a supplementary diagnostic metric."
+    },
+    {
+      "name": "nps_score",
+      "unit": "nps_points",
+      "definition": "Net Promoter Score from periodic or transactionally-triggered surveys associated with support interactions.",
+      "scope": "Optional if NPS is available at the interaction level; otherwise limited to CSAT."
+    },
+    {
+      "name": "cost_per_ticket",
+      "unit": "currency_per_ticket",
+      "definition": "Total operational cost divided by the number of tickets, including allocated human labor cost and incremental agent/infra cost.",
+      "components": [
+        "Human cost: (Total human handling time in hours * blended hourly fully loaded rate) / tickets.",
+        "Agentic cost: LLM/API charges, vector DB queries, orchestration infra, allocated proportionally per ticket."
+      ]
+    },
+    {
+      "name": "escalation_rate_to_human",
+      "unit": "percentage",
+      "definition": "In treatment arm, proportion of tickets initially handled by agents that require human intervention (review, override, or takeover).",
+      "scope": "Treatment only; used as an indicator of agent coverage and complexity."
+    },
+    {
+      "name": "policy_violation_incidents",
+      "unit": "count_per_1k_tickets",
+      "definition": "Confirmed cases where replies or actions violated predefined policy constraints (credits/refunds, security disclosures, compliance rules), as determined by QA audits.",
+      "scope": "Both arms; normalized per 1,000 tickets."
+    },
+    {
+      "name": "auto_resolution_rate",
+      "unit": "percentage",
+      "definition": "In treatment arm, fraction of tickets resolved without any human edits to the agent-proposed response.",
+      "scope": "Treatment only; stratified by issue category and channel."
+    },
+    {
+      "name": "agent_suggestion_acceptance_rate",
+      "unit": "percentage",
+      "definition": "For tickets where agents propose draft replies to humans, proportion of suggestions that are accepted with minor or no edits.",
+      "scope": "Treatment only; indicates quality of agent assistance."
+    }
+  ],
+  "success_criteria": {
+    "primary": [
+      {
+        "metric": "cost_per_ticket",
+        "target": ">= 25% reduction in treatment vs. control, with 95% confidence interval excluding 0% reduction.",
+        "rationale": "Aligns with chapter goal of demonstrating material economic improvement while maintaining quality."
+      },
+      {
+        "metric": "first_contact_resolution_rate",
+        "target": "Non-inferior (no statistically significant decrease greater than 2 percentage points) in treatment vs. control.",
+        "rationale": "Ensures that efficiency gains do not come at the cost of more back-and-forth or unresolved tickets."
+      },
+      {
+        "metric": "csat_score",
+        "target": "Non-inferior with a pre-specified non-inferiority margin (e.g., <= 2 points decrease on a 0\u2013100 normalized scale), or improved.",
+        "rationale": "Guardrail on customer experience."
+      }
+    ],
+    "secondary": [
+      {
+        "metric": "avg_handle_time_per_ticket",
+        "target": ">= 20% reduction in treatment vs. control.",
+        "rationale": "Operational efficiency indicator; often the primary driver of human cost savings."
+      },
+      {
+        "metric": "avg_first_response_time",
+        "target": ">= 20% reduction in treatment vs. control, subject to staffing parity.",
+        "rationale": "Customer-perceived responsiveness improvement."
+      },
+      {
+        "metric": "policy_violation_incidents",
+        "target": "No statistically significant increase; ideally reduction due to automated guardrails.",
+        "rationale": "Safety and compliance assurance."
+      },
+      {
+        "metric": "auto_resolution_rate",
+        "target": "At least 20% of low-complexity tickets (e.g., password reset, simple FAQ) fully handled by agents with no human edits.",
+        "rationale": "Demonstrates meaningful automation coverage in well-defined slices."
+      }
+    ],
+    "statistical_considerations": {
+      "significance_level": 0.05,
+      "power_target": 0.8,
+      "minimum_sample_size_estimate": "Dependent on baseline variance; as a starting point, at least 5,000 tickets per arm for robust inference in a mid-market B2B SaaS context.",
+      "analysis_plan_summary": "Use two-sample t-tests or non-parametric equivalents for continuous metrics (handle time, cost), and chi-squared or proportion tests for rates (FCR, CSAT, policy violations), adjusting for multiple comparisons where appropriate."
+    }
+  },
+  "failure_modes": [
+    {
+      "name": "distribution_shift_between_arms",
+      "description": "Ticket mix (issues, segments, incident periods) differs substantially between control and treatment, invalidating comparisons.",
+      "mitigations": [
+        "Run pre-experiment invariance checks on early randomized data.",
+        "Stratify analysis by key segments (issue category, channel, customer tier).",
+        "Optionally re-weight observations to match distributions."
+      ]
+    },
+    {
+      "name": "guardrail_bypass_or_misconfiguration",
+      "description": "Agentic replies violate policy because escalation or pattern checks are too permissive or incorrectly encoded.",
+      "mitigations": [
+        "Shadow-mode dry run of guardrails using historical tickets before enabling auto-send.",
+        "Limit auto-send to low-risk categories during early phases.",
+        "Require human review for any ticket hitting sensitive keywords or high-risk categories."
+      ]
+    },
+    {
+      "name": "human_behavior_change_bias",
+      "description": "Human agents behave differently when supervising agentic suggestions (e.g., more careful or careless) than in pure manual mode, confounding comparisons.",
+      "mitigations": [
+        "Train agents to follow consistent review policies.",
+        "Use clear UI cues and workflows to limit differences besides agent assistance.",
+        "Measure human editing effort and incorporate into cost and handle time estimates."
+      ]
+    },
+    {
+      "name": "measurement_inaccuracy_in_handle_time",
+      "description": "Ticket system logs do not fully capture true human time spent per ticket, especially for multitasking and context switching.",
+      "mitigations": [
+        "Use a combination of ticket events (assignment, status changes) and sampling-based time tracking to calibrate estimates.",
+        "Apply consistent estimation methods to both arms.",
+        "Report sensitivity analyses using alternative handle time approximations."
+      ]
+    },
+    {
+      "name": "model_regressions_or_api_instability",
+      "description": "LLM service changes behavior or experiences outages during the experiment, distorting results or harming customer experience.",
+      "mitigations": [
+        "Pin model version where possible.",
+        "Implement automatic fallback to human-only handling in case of repeated agent failures or timeouts.",
+        "Log all agent errors and treat affected tickets as separate in analysis."
+      ]
+    },
+    {
+      "name": "overfitting_to_historical_data",
+      "description": "Prompts and guardrails tuned too specifically to historical replay workloads may not generalize to live traffic.",
+      "mitigations": [
+        "Reserve a holdout set of historical tickets not used during tuning.",
+        "Run a small but diverse live pilot (10% treatment) before scaling.",
+        "Continuously monitor error types and adjust policies cautiously."
+      ]
+    }
+  ],
+  "required_environment": {
+    "infrastructure": {
+      "runtime": "Python 3.10+ environment (or equivalent) with access to LLM APIs, vector database, and ticketing/CRM APIs.",
+      "deployment": "Containerized services (e.g., Docker, Kubernetes) or serverless functions for agent orchestration and integrations.",
+      "data_store": "Relational database for experiment logs and analytics (e.g., PostgreSQL), plus a vector store (e.g., PostgreSQL with pgvector, Pinecone, Weaviate, or similar) for KB embeddings.",
+      "messaging": "Queue or pub/sub system (e.g., RabbitMQ, Kafka, AWS SQS/SNS) to decouple ticket events from agent processing.",
+      "monitoring": "Basic observability stack (logs, metrics, dashboards) such as Prometheus/Grafana or a SaaS equivalent."
+    },
+    "dependencies": {
+      "llm_provider": "Access to at least one modern LLM with function-calling / tool-use capabilities via API (e.g., OpenAI, Anthropic, Azure OpenAI).",
+      "ticketing_system": "Sandbox or production instance with API access (e.g., Zendesk Support, Freshdesk, Intercom, or synthetic in-repo implementation).",
+      "crm_system": "Sandbox or synthetic CRM (e.g., HubSpot, Salesforce, or a simple Postgres-backed mock) with read-only API access for customer profiles.",
+      "kb_system": "Knowledge base exported as markdown, HTML, or JSON to be indexed in vector DB; can also be a synthetic KB included in the repository."
+    },
+    "security_and_compliance": {
+      "data_protection": "Anonymization or pseudonymization of PII when exporting logs for analysis.",
+      "access_controls": "Least-privilege API tokens for agents; read-only wherever possible; no direct database write access except through audited services.",
+      "audit_logging": "All agent tool calls and decisions logged with timestamps, input hashes, and outputs."
+    },
+    "configuration": {
+      "experiment_flags": "Feature flags or configuration toggles to route tickets to control or treatment paths based on assignment.",
+      "policy_files": "Machine-readable policy configuration (YAML/JSON) defining high-risk categories, red-flag keywords, and allowed actions.",
+      "prompt_templates": "Version-controlled prompt files for each agent role, stored in the repository with appropriate redaction of secrets."
+    }
+  },
+  "run_instructions": {
+    "overview": "Run the experiment in two phases: (1) offline historical replay for tuning and safety verification; (2) live A/B test for operational and business impact, with phased rollout and monitoring.",
+    "step_by_step": [
+      {
+        "step": 1,
+        "title": "Set up repository and environment",
+        "actions": [
+          "Clone the book's companion repository: git clone https://github.com/bookauthority/turn-your-company-into-an-agentic-organization.git",
+          "Navigate to the customer support experiment directory (e.g., experiments/ch08_cx_agentic_support).",
+          "Create and activate a Python virtual environment.",
+          "Install dependencies from requirements.txt or pyproject.toml.",
+          "Configure environment variables or a .env file for LLM API keys, ticketing/CRM API tokens, and database connection strings (do not commit secrets)."
+        ]
+      },
+      {
+        "step": 2,
+        "title": "Load or generate workloads",
+        "actions": [
+          "If using real data: export historical tickets from your ticketing system including ticket_id, creation time, first response time, status history, agent IDs, channel, tags, free-text fields, and any CSAT scores.",
+          "Run provided ETL scripts to normalize and anonymize ticket data into the repository's expected schema (e.g., tickets.parquet or tickets.jsonl).",
+          "If using synthetic data: run the included synthetic ticket generator script to create a corpus of tickets across defined issue categories and channels.",
+          "Split the dataset into tuning, validation, and holdout subsets using the provided scripts."
+        ]
+      },
+      {
+        "step": 3,
+        "title": "Index the knowledge base",
+        "actions": [
+          "Export your existing KB articles or use the synthetic KB from the repository.",
+          "Run the indexing script to embed documents into the configured vector store, generating embeddings and metadata (category, product area, version).",
+          "Verify that retrieval works by running test queries and manually inspecting top-k results."
+        ]
+      },
+      {
+        "step": 4,
+        "title": "Configure and test agents offline",
+        "actions": [
+          "Edit prompt templates and policy configuration files for triage, knowledge, resolver, and quality-review agents to reflect your domain.",
+          "Run the offline simulation script on the tuning subset of tickets to generate proposed classifications and responses without sending any messages.",
+          "Review a random sample of agent outputs, particularly for high-risk categories, using provided Jupyter notebooks or CLI tools.",
+          "Iterate on prompts and policy thresholds until offline quality and safety criteria are met.",
+          "Run the simulation on the holdout subset to confirm generalization."
+        ]
+      },
+      {
+        "step": 5,
+        "title": "Deploy orchestration and integrations",
+        "actions": [
+          "Deploy the orchestration service (REST API or message-driven worker) to your chosen environment (e.g., Kubernetes, Docker Compose).",
+          "Set up webhooks or polling from the ticketing system to send new ticket events to the orchestration endpoint.",
+          "Configure the ticketing system to add experiment metadata (arm assignment, experiment_id) to each ticket via triggers or apps.",
+          "Implement status update and comment-posting callbacks from the orchestration service back into the ticketing system."
+        ]
+      },
+      {
+        "step": 6,
+        "title": "Run a shadow-mode test in production",
+        "actions": [
+          "Enable the orchestration service in 'shadow' mode where agentic decisions are computed and logged but not applied to live tickets.",
+          "Run shadow mode for at least several days to verify stability, latency, and logging.",
+          "Compare agentic proposed responses with actual human responses for a sampled set of tickets.",
+          "Confirm that guardrails correctly flag or block risky cases."
+        ]
+      },
+      {
+        "step": 7,
+        "title": "Start limited live A/B experiment (Phase 1)",
+        "actions": [
+          "Enable random assignment of a small fraction of new tickets (e.g., 10%) to the treatment path with agentic handling; leave the rest as control.",
+          "Configure the treatment path so that all agentic responses require human approval before sending, at least during initial days.",
+          "Monitor key safety metrics daily (policy violations, customer complaints) and technical metrics (failure rates, latency).",
+          "If no material issues are detected, gradually enable auto-send for clearly low-risk categories (e.g., simple FAQs) under quality-review oversight."
+        ]
+      },
+      {
+        "step": 8,
+        "title": "Scale experiment to main measurement window (Phase 2)",
+        "actions": [
+          "Increase treatment allocation to 30\u201350% of incoming tickets, maintaining stratified randomization.",
+          "Freeze agent configuration (prompts, model versions, thresholds) at the start of this phase.",
+          "Run the experiment for at least 2\u20134 weeks or until the pre-computed sample size requirement is reached in both arms.",
+          "Ensure continuous monitoring and incident response; any major configuration change must be timestamped and documented."
+        ]
+      },
+      {
+        "step": 9,
+        "title": "Collect and analyze results",
+        "actions": [
+          "Export experiment logs (ticket-level with arm assignment, timestamps, metrics, and CSAT responses) to the analysis database or files.",
+          "Run the provided analysis scripts or notebooks to compute metrics per arm, perform significance tests, and visualize distributions.",
+          "Segment results by channel, customer tier, and issue category to understand where agents help or hurt most.",
+          "Document findings in the format specified by the evidence_schema, including confidence intervals and notable qualitative observations."
+        ]
+      },
+      {
+        "step": 10,
+        "title": "Decide on rollout and iterate",
+        "actions": [
+          "Compare results against success_criteria; identify which ticket segments meet thresholds for broader agentic adoption.",
+          "Plan a phased rollout where low-risk segments move to higher agent coverage, while higher-risk segments remain human-led with agent assistance.",
+          "Update financial models (cost per ticket, OPEX projections) using measured metrics.",
+          "Capture lessons learned and update guardrails, training, and runbooks accordingly."
+        ]
+      }
+    ]
+  },
+  "evidence_schema": {
+    "description": "Structured format for capturing the outcomes, configuration, and context of the experiment so that others can interpret and replicate it.",
+    "schema_version": "1.0.0",
+    "fields": {
+      "experiment_metadata": {
+        "experiment_id": "string (e.g., 'exp-ch08-cx-agentic-support-v1')",
+        "organization_id": "string or null; anonymized org identifier if shared externally",
+        "ticketing_platform": "string (e.g., 'zendesk', 'freshdesk', 'synthetic')",
+        "crm_platform": "string (e.g., 'salesforce', 'hubspot', 'synthetic')",
+        "llm_provider": "string (e.g., 'openai', 'anthropic', 'azure-openai')",
+        "llm_model": "string (e.g., 'gpt-4.1-mini', 'claude-3.5-sonnet')",
+        "start_date": "ISO 8601 date-time for experiment start",
+        "end_date": "ISO 8601 date-time for experiment end",
+        "phase": "string enum: ['historical_replay', 'live_phase_1', 'live_phase_2']",
+        "config_git_commit": "string; Git commit hash of configuration and prompt set used during the experiment window"
+      },
+      "configuration_snapshot": {
+        "treatment_allocation": "float; fraction of tickets assigned to treatment during live phases",
+        "auto_send_enabled": "boolean; whether agents were allowed to auto-send replies without human approval",
+        "auto_send_scope": "array of strings; issue categories/channels eligible for auto-send",
+        "guardrail_policies": "object; summarized configuration of high-risk rules (e.g., max_refund_amount, restricted_topics)",
+        "agent_roles_enabled": "array of strings; which agents (triage, knowledge, resolver, quality_review) were active",
+        "staffing_context": {
+          "num_l1_agents": "integer; average concurrent L1 agents during experiment",
+          "num_l2_agents": "integer; average concurrent L2 agents during experiment",
+          "business_hours_definition": "string; time zone and hours"
+        }
+      },
+      "traffic_summary": {
+        "total_tickets_control": "integer",
+        "total_tickets_treatment": "integer",
+        "channel_breakdown": {
+          "control": "object; map of channel->ticket_count",
+          "treatment": "object; map of channel->ticket_count"
+        },
+        "category_breakdown": {
+          "control": "object; map of category->ticket_count",
+          "treatment": "object; map of category->ticket_count"
+        }
+      },
+      "metric_results": {
+        "control": {
+          "avg_first_response_time": {
+            "value": "float",
+            "unit": "minutes",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          },
+          "avg_handle_time_per_ticket": {
+            "value": "float",
+            "unit": "minutes",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          },
+          "first_contact_resolution_rate": {
+            "value": "float",
+            "unit": "percentage_points",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          },
+          "csat_score": {
+            "value": "float",
+            "unit": "csat_points_or_0-100",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          },
+          "nps_score": {
+            "value": "float or null",
+            "unit": "nps_points",
+            "ci95_low": "float or null",
+            "ci95_high": "float or null"
+          },
+          "cost_per_ticket": {
+            "value": "float",
+            "unit": "currency_per_ticket",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          },
+          "policy_violation_incidents": {
+            "value": "float",
+            "unit": "incidents_per_1k_tickets",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          }
+        },
+        "treatment": {
+          "avg_first_response_time": {
+            "value": "float",
+            "unit": "minutes",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          },
+          "avg_handle_time_per_ticket": {
+            "value": "float",
+            "unit": "minutes",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          },
+          "first_contact_resolution_rate": {
+            "value": "float",
+            "unit": "percentage_points",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          },
+          "csat_score": {
+            "value": "float",
+            "unit": "csat_points_or_0-100",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          },
+          "nps_score": {
+            "value": "float or null",
+            "unit": "nps_points",
+            "ci95_low": "float or null",
+            "ci95_high": "float or null"
+          },
+          "cost_per_ticket": {
+            "value": "float",
+            "unit": "currency_per_ticket",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          },
+          "policy_violation_incidents": {
+            "value": "float",
+            "unit": "incidents_per_1k_tickets",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          },
+          "escalation_rate_to_human": {
+            "value": "float",
+            "unit": "percentage_points",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          },
+          "auto_resolution_rate": {
+            "value": "float",
+            "unit": "percentage_points",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          },
+          "agent_suggestion_acceptance_rate": {
+            "value": "float",
+            "unit": "percentage_points",
+            "ci95_low": "float",
+            "ci95_high": "float"
+          }
+        },
+        "delta_treatment_minus_control": {
+          "avg_first_response_time": {
+            "delta": "float",
+            "unit": "minutes",
+            "ci95_low": "float",
+            "ci95_high": "float",
+            "p_value": "float"
+          },
+          "avg_handle_time_per_ticket": {
+            "delta": "float",
+            "unit": "minutes",
+            "ci95_low": "float",
+            "ci95_high": "float",
+            "p_value": "float"
+          },
+          "first_contact_resolution_rate": {
+            "delta": "float",
+            "unit": "percentage_points",
+            "ci95_low": "float",
+            "ci95_high": "float",
+            "p_value": "float"
+          },
+          "csat_score": {
+            "delta": "float",
+            "unit": "csat_points_or_0-100",
+            "ci95_low": "float",
+            "ci95_high": "float",
+            "p_value": "float"
+          },
+          "cost_per_ticket": {
+            "delta": "float",
+            "unit": "currency_per_ticket",
+            "ci95_low": "float",
+            "ci95_high": "float",
+            "p_value": "float"
+          },
+          "policy_violation_incidents": {
+            "delta": "float",
+            "unit": "incidents_per_1k_tickets",
+            "ci95_low": "float",
+            "ci95_high": "float",
+            "p_value": "float"
+          }
+        }
+      },
+      "qualitative_observations": {
+        "agent_failure_modes_examples": "array of case descriptions highlighting notable agent errors or unexpected behaviors.",
+        "human_feedback_summary": "text summary of agent and supervisor qualitative feedback during the experiment.",
+        "customer_feedback_snippets": "array of anonymized customer comments related to support quality and response content.",
+        "operational_lessons_learned": "text; key takeaways for future iterations and for other organizations attempting similar experiments."
+      },
+      "conclusion": {
+        "meets_primary_success_criteria": "boolean",
+        "meets_secondary_success_criteria": "boolean",
+        "summary": "short text synopsis of whether the experiment supports the hypothesis and under what constraints or caveats.",
+        "recommended_next_steps": "text; suggested rollout plan, further experiments (e.g., by segment), and any governance updates."
+      }
+    }
+  }
+}

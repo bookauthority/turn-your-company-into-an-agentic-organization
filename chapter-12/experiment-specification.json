@@ -1,0 +1,437 @@
+{
+  "experiment_id": "exp-12-knowledge-layer-rag-impact-v1",
+  "hypothesis": "Implementing an agentic knowledge layer (centralized ingestion, indexing, and retrieval powering RAG agents) will measurably improve task accuracy and reduce completion time for knowledge-intensive workflows across support, sales, HR, and IT compared to agents (or humans) operating on scattered documents and ad-hoc search, without degrading answer freshness or trustworthiness.",
+  "baseline": {
+    "description": "Current-state knowledge access without a unified agentic knowledge layer. Workflows rely on manual search or naive per-tool RAG.",
+    "conditions": [
+      "No centralized, cross-domain knowledge index; information resides in siloed systems (e.g., Zendesk/Helpdesk tickets, Confluence/Google Drive docs, CRM notes, HRIS docs, IT runbooks).",
+      "Agents (or human operators in the manual baseline workload) access knowledge via:\n  - Native search in each system (e.g., Confluence search, Google Drive search), OR\n  - A simple, single-source RAG setup per domain (e.g., support bot with its own small vector index, sales bot with a different index), with no shared schema or metadata conventions.",
+      "No continuous ingestion agents; indexes or docs are updated manually and irregularly.",
+      "No automated deprecation of stale content; outdated docs remain accessible without warnings.",
+      "Prompting pattern: agents receive the user query and (optionally) a raw text dump of the few top search results from one system, without unified reranking or metadata-based filtering."
+    ]
+  },
+  "treatment": {
+    "description": "Centralized agentic knowledge layer with ingestion, indexing, and retrieval powering domain agents via a unified RAG API.",
+    "components": [
+      "Ingestion pipeline:\n  - Scheduled and on-demand ingestion agents pulling content from multiple systems: ticketing/support KB, CRM, HRIS/HR KB, IT runbooks, wikis, document stores.\n  - Normalization into a common document schema: {id, source_system, source_url, domain, doc_type, title, body, created_at, updated_at, owner, confidentiality_level, tags, validity_start, validity_end (optional), canonical_version_id (optional)}.",
+      "Indexing:\n  - Central vector index (e.g., using a local vector DB like Chroma/Weaviate/Qdrant) storing embeddings of document chunks plus metadata.\n  - Text-chunking strategy (e.g., 512\u20131024 token windows with overlap).\n  - Secondary metadata index (e.g., SQL/NoSQL) to support filtering by domain, doc_type, recency, and confidentiality_level.",
+      "Retrieval API:\n  - A single retrieval service exposing a function signature like retrieve_knowledge(query, domain, user_role, top_k, filters) returning ranked passages + metadata.\n  - Hybrid retrieval (keyword + vector) or at least metadata-aware vector retrieval (filtering by domain, recency, and confidentiality_level).",
+      "RAG agent pattern:\n  - Domain agents (support, sales, HR, IT) call the shared retrieval API instead of per-domain ad-hoc search.\n  - Prompts explicitly separate task instruction, retrieved passages (cited with source IDs/URLs), and answer generation.\n  - Agents surface citations and confidence indicators to users.",
+      "Freshness/deprecation agents:\n  - Continuous ingestion workers detecting new/updated docs via webhooks or polling, updating the central index incrementally.\n  - Deprecation agents flagging or downranking documents that are superseded (based on updated_at, canonical_version_id, or explicit deprecation tags) and optionally inserting warnings into responses if only stale content is available."
+    ]
+  },
+  "workloads": [
+    {
+      "name": "support_faq_resolution",
+      "description": "Agents answering internal or external support questions (e.g., product features, troubleshooting steps, entitlement policies) using the organization's knowledge.",
+      "input_set": {
+        "source": "Synthetic and/or anonymized real support tickets and FAQ queries, normalized into a structured dataset.",
+        "size_target": 150,
+        "composition": {
+          "easy_faq": 50,
+          "multi_doc_questions": 50,
+          "policy_or_terms_questions": 25,
+          "edge_cases_or_recent_changes": 25
+        },
+        "format": {
+          "fields": [
+            "question_id",
+            "channel (email/chat/web form)",
+            "question_text",
+            "required_answer_type (instructional, policy, troubleshooting_steps, summary)",
+            "gold_answer_text",
+            "gold_citations (list of document_ids and span references in the KB)",
+            "difficulty_label (easy, medium, hard)",
+            "recency_dependency (boolean)",
+            "domain_specific_tags (product_area, region, plan_type)"
+          ]
+        }
+      },
+      "baseline_flow": "Agent (or human operator for manual variant) uses existing support KB search or per-tool non-centralized RAG, then answers the question without access to cross-domain index.",
+      "treatment_flow": "Support agent calls the centralized retrieval API with domain='support' and appropriate metadata filters, uses returned passages to craft an answer with citations."
+    },
+    {
+      "name": "sales_ops_policy_and_process_lookup",
+      "description": "Agents assisting sales or RevOps with questions about pricing rules, discount approvals, contract clauses, and internal process steps.",
+      "input_set": {
+        "source": "Synthetic sales policy/process queries derived from real playbooks and approval matrices.",
+        "size_target": 100,
+        "composition": {
+          "pricing_policy_questions": 40,
+          "discount_approval_processes": 30,
+          "contract_clause_explanations": 30
+        },
+        "format": {
+          "fields": [
+            "question_id",
+            "question_text",
+            "scenario_description",
+            "gold_answer_text",
+            "gold_citations (policy_docs, pricing_sheets, approval_matrices)",
+            "risk_level (low, medium, high)"
+          ]
+        }
+      },
+      "baseline_flow": "Sales agent uses CRM notes, shared drives, or internal wiki search without a unified index; or a narrow sales-only RAG index.",
+      "treatment_flow": "Sales agent calls centralized retrieval with domain='sales', filters by doc_type in ['pricing_policy', 'approval_matrix', 'contract_template'], and responds with cited guidance."
+    },
+    {
+      "name": "hr_it_internal_service_qa",
+      "description": "Agents answering employees' HR and IT questions (benefits, PTO, device policies, VPN setup, password reset edge cases).",
+      "input_set": {
+        "source": "Synthetic HR/IT queries based on internal policy docs and runbooks.",
+        "size_target": 150,
+        "composition": {
+          "hr_benefits_and_policies": 60,
+          "hr_process_questions (onboarding, changes)": 30,
+          "it_how_to (setup, configuration)": 40,
+          "it_policies_and_security": 20
+        },
+        "format": {
+          "fields": [
+            "question_id",
+            "question_text",
+            "category (hr, it)",
+            "gold_answer_text",
+            "gold_citations (policy_docs, runbooks)",
+            "requires_cross_system_context (boolean)"
+          ]
+        }
+      },
+      "baseline_flow": "Agent (or human helpdesk analyst) searches HR/IT systems independently (HRIS search, IT runbook wiki search) and responds without the unified layer.",
+      "treatment_flow": "HR/IT agent calls centralized retrieval with domain='hr' or 'it' and confidentiality-based filters, and generates an answer with cited policy/runbook sections."
+    },
+    {
+      "name": "freshness_regression_suite",
+      "description": "Targeted set of questions whose correct answers change due to policy/process updates to evaluate knowledge staleness over time.",
+      "input_set": {
+        "source": "Designed scenarios where a document is updated or superseded between T0 and T1.",
+        "size_target": 60,
+        "composition": {
+          "support_release_notes_changes": 20,
+          "sales_pricing_or_discount_rule_changes": 15,
+          "hr_policy_changes (PTO, parental leave)": 15,
+          "it_security_policy_or_tooling_changes": 10
+        },
+        "format": {
+          "fields": [
+            "question_id",
+            "question_text",
+            "gold_answer_T0",
+            "gold_answer_T1",
+            "change_timestamp",
+            "changed_docs (list of document_ids)",
+            "staleness_window_days"
+          ]
+        }
+      },
+      "baseline_flow": "Same as other workloads but with no continuous ingestion; indexes/docs are only updated via infrequent manual runs, so many answers remain on gold_answer_T0 even after T1.",
+      "treatment_flow": "Continuous ingestion and deprecation agents ensure the central index reflects updates within a defined SLA (e.g., <1 hour), so answers move from gold_answer_T0 to gold_answer_T1 promptly."
+    }
+  ],
+  "controls": {
+    "model_and_prompting": {
+      "llm_model": "Use the same LLM (e.g., gpt-4.x or equivalent) and version for baseline and treatment runs.",
+      "temperature": 0.1,
+      "max_tokens": 512,
+      "system_prompt_base": "Consistent base system prompt describing role, formatting, and need to answer strictly from provided knowledge.",
+      "post_processing": "Identical normalization of outputs (e.g., trimming, markdown stripping) across baseline and treatment."
+    },
+    "data_and_randomization": {
+      "dataset_split": "Predefine the full task set; use the exact same questions and order for baseline and treatment.",
+      "run_repetitions": 3,
+      "random_seed": 42,
+      "train_test_contamination": "Ensure evaluation questions and gold answers are not used to fine-tune or prompt-train agents."
+    },
+    "access_and_permissions": {
+      "user_roles": "Simulate same user role/permissions for baseline and treatment to avoid differences due to access restrictions.",
+      "confidentiality_filters": "Apply the same confidentiality level filters in both setups; treatment may enforce them centrally via metadata filters, baseline via system-level permissions."
+    },
+    "infra_and_runtime": {
+      "hardware": "Run baseline and treatment on the same hardware tier (or same cloud region and instance types).",
+      "concurrency": "Limit concurrent requests similarly in baseline and treatment when measuring latency.",
+      "cache_policy": "Either disable caching or apply identical caching rules in both conditions."
+    }
+  },
+  "metrics": [
+    {
+      "name": "answer_exact_match_rate",
+      "unit": "fraction_between_0_and_1",
+      "definition": "Proportion of questions where the agent's answer matches the gold_answer_text exactly under strict string or token-level comparison (after normalization)."
+    },
+    {
+      "name": "answer_semantic_accuracy",
+      "unit": "fraction_between_0_and_1",
+      "definition": "Average semantic correctness score (0\u20131) per answer, computed via independent LLM-as-judge or human raters using a rubric (correct, partially_correct, incorrect)."
+    },
+    {
+      "name": "citation_precision",
+      "unit": "fraction_between_0_and_1",
+      "definition": "Among the citations provided by the agent, the fraction that point to documents/spans deemed relevant and non-misleading for the gold answer."
+    },
+    {
+      "name": "citation_recall",
+      "unit": "fraction_between_0_and_1",
+      "definition": "Fraction of gold_citations (or equivalent authoritative docs) that are cited or whose content is clearly used in the answer."
+    },
+    {
+      "name": "task_completion_time_p50",
+      "unit": "seconds",
+      "definition": "Median time from question submission to answer completion for automated runs (or time measured for human baselines where applicable)."
+    },
+    {
+      "name": "task_completion_time_p90",
+      "unit": "seconds",
+      "definition": "90th percentile of completion time across questions."
+    },
+    {
+      "name": "coverage_rate",
+      "unit": "fraction_between_0_and_1",
+      "definition": "Fraction of questions for which the agent returns a substantive answer rather than 'I don't know' or equivalent abstention."
+    },
+    {
+      "name": "hallucination_rate",
+      "unit": "fraction_between_0_and_1",
+      "definition": "Fraction of answers judged to contain fabricated or unsupported claims that are not present in any accessible knowledge source."
+    },
+    {
+      "name": "stale_answer_rate",
+      "unit": "fraction_between_0_and_1",
+      "definition": "For the freshness_regression_suite, fraction of answers that reflect outdated gold_answer_T0 instead of the updated gold_answer_T1 after the change_timestamp + allowed_SLA."
+    },
+    {
+      "name": "index_update_latency_p50",
+      "unit": "minutes",
+      "definition": "Median time from source document update (e.g., wiki change) to that change becoming available in the retrieval index."
+    },
+    {
+      "name": "index_update_latency_p90",
+      "unit": "minutes",
+      "definition": "90th percentile latency from source update to index availability."
+    }
+  ],
+  "success_criteria": {
+    "primary": [
+      {
+        "condition": "answer_semantic_accuracy_treatment - answer_semantic_accuracy_baseline >= 0.10",
+        "description": "At least a 10 percentage-point absolute improvement in semantic answer accuracy across combined workloads."
+      },
+      {
+        "condition": "task_completion_time_p50_treatment <= 0.7 * task_completion_time_p50_baseline",
+        "description": "Median task completion time reduced by at least 30%."
+      }
+    ],
+    "secondary": [
+      {
+        "condition": "hallucination_rate_treatment <= 0.5 * hallucination_rate_baseline",
+        "description": "Hallucination rate at most half of baseline."
+      },
+      {
+        "condition": "stale_answer_rate_treatment <= 0.3 * stale_answer_rate_baseline",
+        "description": "Stale answer rate reduced by at least 70% on freshness-dependent questions."
+      },
+      {
+        "condition": "citation_precision_treatment >= citation_precision_baseline AND citation_recall_treatment >= citation_recall_baseline",
+        "description": "Treatment does not degrade citation quality; ideally improves it."
+      }
+    ],
+    "statistical": {
+      "test_plan": "Use two-sided statistical tests (e.g., proportion z-test for binary metrics, Mann-Whitney U or t-test for continuous metrics) to verify that observed differences are unlikely under the null hypothesis (alpha=0.05).",
+      "minimum_effect_size_reporting": "Report confidence intervals for key deltas (accuracy, latency). Do not claim success solely based on point estimates if confidence intervals cross zero."
+    }
+  },
+  "failure_modes": [
+    {
+      "name": "query_mismatch_or_overfiltering",
+      "description": "The centralized retrieval layer applies overly strict metadata filters (e.g., domain or confidentiality filters) causing relevant documents to be excluded, reducing coverage or accuracy.",
+      "mitigations": [
+        "Log queries with zero or low-relevance results and inspect filters.",
+        "Implement a fallback retrieval path that relaxes filters when initial results are sparse.",
+        "Perform periodic evaluation of recall on a labeled corpus."
+      ]
+    },
+    {
+      "name": "indexing_or_chunking_errors",
+      "description": "Documents are incorrectly parsed, chunked, or embedded, leading to missing or incoherent passages in retrieval results.",
+      "mitigations": [
+        "Track ingestion errors and maintain a queue of failed documents.",
+        "Spot-check random samples of indexed documents and their chunks.",
+        "Include checksum/version metadata to detect and correct malformed records."
+      ]
+    },
+    {
+      "name": "stale_or_conflicting_docs",
+      "description": "The central index contains multiple versions of the same policy or runbook; the retrieval layer surfaces obsolete ones, or the agent fails to prefer the canonical version.",
+      "mitigations": [
+        "Use canonical_version_id and validity_start/validity_end metadata.",
+        "Deprecation agent downranks or excludes superseded documents.",
+        "Prompt the agent to favor the most recent valid document and to flag conflicts."
+      ]
+    },
+    {
+      "name": "hallucinations_despite_rag",
+      "description": "Even with relevant passages, the LLM fabricates steps, numerical values, or policies not in the sources.",
+      "mitigations": [
+        "Constrain prompts to 'answer only from provided context; say you don't know otherwise'.",
+        "Introduce answer verification heuristics or a judge agent that checks claims against retrieved text.",
+        "For high-risk domains (finance/HR), require human review for non-trivial responses."
+      ]
+    },
+    {
+      "name": "evaluation_bias_or_leakage",
+      "description": "LLM-as-judge shares biases with the answering model or has seen the gold answers in its prompt, inflating accuracy scores.",
+      "mitigations": [
+        "Use a separate model as judge or human raters for a subset.",
+        "Blind the judge to whether an answer came from baseline or treatment.",
+        "Randomize answer ordering during evaluation and log decisions."
+      ]
+    },
+    {
+      "name": "workload_non_representativeness",
+      "description": "Synthetic or curated questions do not reflect real-world query distribution, leading to misleading performance claims.",
+      "mitigations": [
+        "Sample anonymized real queries where possible.",
+        "Validate the synthetic dataset with domain experts.",
+        "Report workload composition and acknowledge limitations."
+      ]
+    },
+    {
+      "name": "infra_bottlenecks_and_latency_noise",
+      "description": "Differences in system load, network conditions, or caching cause misleading latency comparisons.",
+      "mitigations": [
+        "Run baseline and treatment in alternating blocks under similar load.",
+        "Record per-request timestamps, system load metrics, and retry events.",
+        "Use robust statistics (median, p90) and avoid overinterpreting small deltas."
+      ]
+    }
+  ],
+  "required_environment": {
+    "code_repository": "https://github.com/bookauthority/turn-your-company-into-an-agentic-organization",
+    "services": [
+      "LLM provider API (e.g., OpenAI, Anthropic, or local LLM with equivalent quality).",
+      "Vector database (e.g., Chroma, Weaviate, Qdrant, Pinecone).",
+      "Document storage/source systems or fixtures (e.g., local file system with markdown/HTML/PDF docs representing support KB, sales policies, HR/IT policies).",
+      "Optional: Relational or document database for metadata index (e.g., PostgreSQL, SQLite, MongoDB)."
+    ],
+    "infrastructure": {
+      "runtime": "Python 3.10+ environment with necessary libraries (LLM SDK, vector DB client, HTTP server framework, evaluation tools).",
+      "hardware": "Single machine or small VM with at least 8 GB RAM for test-scale corpora (exact requirements depend on document volume; experiments should be designed to run on a typical developer laptop or small cloud instance).",
+      "network": "Internet access if using cloud LLM/vector DB; for fully offline reproducibility, instructions should also provide an option to use a local LLM and local vector DB."
+    },
+    "datasets": {
+      "support_kb": "Synthetic or anonymized documentation for product FAQs, troubleshooting, and policies stored as markdown or HTML files with timestamps.",
+      "sales_policies": "Pricing sheets, discount approval matrices, and process docs as structured markdown/CSV/JSON.",
+      "hr_policies": "PTO, benefits, and HR process documents as markdown/HTML.",
+      "it_runbooks": "IT setup and troubleshooting runbooks and policies.",
+      "question_sets": "Structured JSON/CSV datasets for each workload (support_faq_resolution, sales_ops_policy_and_process_lookup, hr_it_internal_service_qa, freshness_regression_suite) with fields described in workloads."
+    }
+  },
+  "run_instructions": [
+    "1. Setup the codebase:",
+    "   1.1. Clone the repository:\n       git clone https://github.com/bookauthority/turn-your-company-into-an-agentic-organization\n       cd turn-your-company-into-an-agentic-organization",
+    "   1.2. Navigate to the chapter 12 experiment directory (e.g., experiments/ch12_knowledge_layer_rag).",
+    "   1.3. Create and activate a Python virtual environment, then install dependencies:\n       python -m venv .venv\n       source .venv/bin/activate  # or .venv\\Scripts\\activate on Windows\n       pip install -r requirements.txt",
+    "   1.4. Configure environment variables for LLM and vector DB access (e.g., OPENAI_API_KEY, VECTOR_DB_URL). Do not hardcode secrets in the repo.",
+    "2. Prepare synthetic or anonymized corpora:",
+    "   2.1. Populate the data/corpus directory with domain-specific documents:\n       - data/corpus/support/*.md\n       - data/corpus/sales/*.md\n       - data/corpus/hr/*.md\n       - data/corpus/it/*.md",
+    "   2.2. Ensure each document includes metadata in front matter or sidecar JSON (id, domain, doc_type, created_at, updated_at, etc.).",
+    "   2.3. For freshness experiments, create two versions of some documents (e.g., pricing_v1.md and pricing_v2.md) with different validity periods.",
+    "3. Implement and run the baseline setup:",
+    "   3.1. Baseline A (recommended): Non-centralized simple RAG per domain.\n       - Use the script baseline/build_domain_indices.py to create separate vector indices per domain.\n       - Launch the baseline agent server (e.g., python baseline/run_baseline_agents.py), which:\n         * Exposes endpoints like POST /answer_support, /answer_sales, etc.\n         * For each domain, retrieves from its own index only.\n   3.2. Alternative baseline: manual/human evaluation (optional) for a subset of workloads. Document procedures and timing method if used.",
+    "   3.3. Verify baseline answers on a small sample manually to confirm end-to-end correctness (retrieval + answer generation).",
+    "4. Implement and run the treatment (agentic knowledge layer):",
+    "   4.1. Start the ingestion pipeline:\n       - Run scripts in treatment/ingestion (e.g., python ingest_corpus.py) to:\n         * Parse documents from data/corpus.\n         * Normalize to the common document schema.\n         * Chunk content and compute embeddings.\n         * Upsert into the central vector index and metadata store.",
+    "   4.2. Launch continuous ingestion and deprecation agents (for freshness workload):\n       - Start watchers (e.g., python watch_for_updates.py) that detect source file updates and re-index changed docs.\n       - Run deprecation agent (python run_deprecation_agent.py) to mark older versions as deprecated based on naming or metadata.",
+    "   4.3. Start the retrieval API service:\n       - Run python treatment/run_knowledge_service.py\n       - This should expose an HTTP endpoint POST /retrieve_knowledge that accepts query, domain, user_role, top_k, and filters, and returns ranked passages + metadata.",
+    "   4.4. Start domain agents that use the central knowledge layer:\n       - Run python treatment/run_domain_agents.py\n       - This service exposes endpoints like POST /answer with payload {domain, question_text, user_role}, internally calling /retrieve_knowledge and the LLM.",
+    "5. Run evaluation for both baseline and treatment:",
+    "   5.1. Load evaluation question sets from data/eval/*.json (one file per workload).",
+    "   5.2. For each workload and condition (baseline, treatment):\n       - Use runner scripts like python eval/run_eval.py --condition=baseline --workload=support_faq_resolution\n         and python eval/run_eval.py --condition=treatment --workload=support_faq_resolution.\n       - Configure number of repetitions (e.g., --repeats=3) and random_seed=42 for reproducibility.",
+    "   5.3. Store raw outputs in structured JSONL files (e.g., results/baseline/support_run1.jsonl, results/treatment/support_run1.jsonl) including:\n       - question_id, condition, workload, raw_answer_text, citations, start_time, end_time, retrieved_docs, retrieval_latency_ms, llm_latency_ms.",
+    "6. Score answers and compute metrics:",
+    "   6.1. Use scoring scripts (e.g., python eval/score_answers.py) to compute:\n       - answer_exact_match_rate\n       - answer_semantic_accuracy (via LLM-as-judge or human rating JSON files)\n       - citation_precision and citation_recall\n       - hallucination_rate\n       - stale_answer_rate (for freshness_regression_suite)\n       - coverage_rate\n       - task_completion_time_p50/p90",
+    "   6.2. Aggregate per-workload metrics into a single summary table comparing baseline vs. treatment with confidence intervals and p-values for key metrics.",
+    "7. Analyze results and validate assumptions:",
+    "   7.1. Generate plots/tables (e.g., in a Jupyter notebook notebooks/ch12_analysis.ipynb) visualizing accuracy vs. latency, hallucination vs. coverage, and stale answer rates over time.",
+    "   7.2. Manually inspect a sample of incorrect or hallucinated answers to understand failure modes and annotate whether they stem from retrieval gaps, indexing issues, or LLM behavior.",
+    "   7.3. Document findings, including any deviations from expected success_criteria, and capture them in a markdown report (reports/ch12_experiment_report.md).",
+    "8. Reproducibility checklist:",
+    "   8.1. Ensure exact model version identifiers, hyperparameters, and dataset commit hashes are recorded in the report.",
+    "   8.2. Tag the repository with a release (e.g., ch12-knowledge-layer-rag-v1) referencing the scripts, configs, and data used.",
+    "   8.3. Optionally, provide a docker-compose configuration to spin up vector DB, metadata DB, and services in a single command."
+  ],
+  "evidence_schema": {
+    "run_metadata": {
+      "fields": {
+        "experiment_id": "string, must match 'exp-12-knowledge-layer-rag-impact-v1'",
+        "run_id": "string, unique identifier for each full experiment run (e.g., UUID).",
+        "date_utc": "ISO 8601 timestamp of the run start.",
+        "llm_model_name": "string, exact identifier (e.g., gpt-4.1-2025-01-01).",
+        "vector_db": "string, name and version of the vector DB used.",
+        "code_commit_hash": "string, Git commit hash of the code used.",
+        "dataset_commit_hash": "string, Git or data version hash of the corpora and question sets.",
+        "config": "JSON object containing temperature, top_k, chunk_size, filters, hardware details, etc."
+      }
+    },
+    "per_question_record": {
+      "fields": {
+        "run_id": "string, foreign key to run_metadata.run_id.",
+        "condition": "string, one of ['baseline', 'treatment'].",
+        "workload": "string, one of ['support_faq_resolution', 'sales_ops_policy_and_process_lookup', 'hr_it_internal_service_qa', 'freshness_regression_suite'].",
+        "question_id": "string, unique within workload.",
+        "question_text": "string.",
+        "domain": "string, e.g., 'support', 'sales', 'hr', 'it'.",
+        "gold_answer_text": "string.",
+        "gold_citations": "array of {document_id: string, span: string or null}.",
+        "agent_answer_text": "string.",
+        "agent_citations": "array of {document_id: string, span: string or null}.",
+        "retrieved_docs": "array of {document_id: string, score: float, rank: int}.",
+        "start_time_utc": "ISO 8601 timestamp.",
+        "end_time_utc": "ISO 8601 timestamp.",
+        "retrieval_latency_ms": "number.",
+        "llm_latency_ms": "number.",
+        "evaluation": {
+          "exact_match": "boolean.",
+          "semantic_score": "number between 0 and 1.",
+          "hallucination_flag": "boolean.",
+          "stale_flag": "boolean, especially for freshness_regression_suite.",
+          "citation_precision": "number between 0 and 1.",
+          "citation_recall": "number between 0 and 1.",
+          "notes": "string, optional qualitative comments by evaluator."
+        }
+      }
+    },
+    "aggregate_metrics_record": {
+      "fields": {
+        "run_id": "string.",
+        "condition": "string, 'baseline' or 'treatment'.",
+        "workload": "string or 'all' for aggregated.",
+        "n_questions": "integer.",
+        "answer_exact_match_rate": "number between 0 and 1.",
+        "answer_semantic_accuracy": "number between 0 and 1.",
+        "citation_precision": "number between 0 and 1.",
+        "citation_recall": "number between 0 and 1.",
+        "hallucination_rate": "number between 0 and 1.",
+        "stale_answer_rate": "number between 0 and 1.",
+        "coverage_rate": "number between 0 and 1.",
+        "task_completion_time_p50": "number, seconds.",
+        "task_completion_time_p90": "number, seconds.",
+        "index_update_latency_p50": "number, minutes, for freshness workloads.",
+        "index_update_latency_p90": "number, minutes, for freshness workloads.",
+        "confidence_intervals": {
+          "answer_semantic_accuracy": "{low: number, high: number}",
+          "task_completion_time_p50": "{low: number, high: number}"
+        },
+        "statistical_tests": {
+          "vs_other_condition_run_id": "string, reference to another aggregate_metrics_record.run_id.",
+          "p_values": {
+            "answer_semantic_accuracy": "number, two-sided.",
+            "task_completion_time_p50": "number, two-sided.",
+            "hallucination_rate": "number, two-sided."
+          }
+        }
+      }
+    }
+  }
+}

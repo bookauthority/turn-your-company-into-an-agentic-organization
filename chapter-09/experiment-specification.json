@@ -1,0 +1,940 @@
+{
+  "experiment_id": "exp-ch09-agentic-sales-ops-mas-vs-manual-v1",
+  "hypothesis": "In a mid-market B2B sales organization, implementing a governed multi-agent sales operations system (for lead enrichment, routing, pipeline hygiene, and quote-to-order assistance) will reduce sales-ops/admin time per opportunity by at least 40% and average lead-response and quote cycle times by at least 20%, without degrading data quality or forecast accuracy relative to a well-instrumented manual baseline.",
+  "baseline": {
+    "description": "Current-state manual or semi-automated sales operations workflow in a sandbox or mirrored environment, with human sales operations staff and AEs handling lead enrichment, routing decisions, pipeline hygiene, and quote-to-order tasks using the existing CRM and tools.",
+    "process": {
+      "lead_intake": "Leads enter via existing channels (web forms, marketing automation, uploaded lists) and are pushed into the CRM as raw records without AI-driven augmentation.",
+      "enrichment": "Sales operations or SDRs manually research each lead/account using the web, LinkedIn, enrichment tools (e.g., Clearbit/ZoomInfo), and internal notes, then copy/paste data into CRM fields.",
+      "routing": "Leads/opportunities are routed to reps based on static rules (e.g., territory, segment) implemented via CRM assignment rules or manual reassignment by sales ops.",
+      "pipeline_hygiene": "Sales managers and ops staff run regular pipeline reviews and manual clean-up (closing stale opportunities, fixing stages, updating amounts, next steps, close dates).",
+      "quote_to_order": "AEs manually assemble quotes using CPQ tools or price books, obtain approvals by email/Slack, and create orders/contracts in CRM/CPQ/ERP, with little or no automation.",
+      "follow_ups": "Task creation and follow-up cadences are driven by playbooks or human judgment, with reminders coming from basic CRM task functionality or email calendars.",
+      "forecasting_support": "Sales leadership reviews pipeline reports and spreadsheets to estimate forecast; ops may lightly annotate or adjust, but no AI-driven assistance is used."
+    },
+    "assignment": {
+      "unit_of_randomization": "Lead or opportunity record, depending on workflow being tested.",
+      "parallel_runs": "For a given experimental window, incoming leads/opportunities are randomly assigned to baseline (manual) or treatment (agentic) paths while being handled by the same pool of reps and ops staff to control for skill differences.",
+      "human_role": "In the baseline path, humans perform all enrichment, routing, hygiene, and quote tasks using their normal procedures; in the treatment path, they supervise or override agent suggestions where required by policy."
+    }
+  },
+  "treatment": {
+    "description": "A coordinated multi-agent sales operations system integrated with the CRM and communication tools that automates lead enrichment, routing, pipeline hygiene prompts, and quote-to-order preparation under human supervision.",
+    "agents": [
+      {
+        "name": "Lead_Enrichment_Agent",
+        "responsibility": "Automatically enrich new leads and accounts with firmographic and contact data using external APIs and web search, and write structured values into CRM fields.",
+        "tools": [
+          "Enrichment_API_Tool (e.g., Clearbit/ZoomInfo mock or sandbox)",
+          "Web_Search_Scraper (constrained, synthetic-safe)",
+          "CRM_API_Tool (read/write access to lead and account objects)"
+        ],
+        "human_approval": "Enriched fields flagged for human review if confidence scores are below a configurable threshold or if overwriting non-empty high-trust fields."
+      },
+      {
+        "name": "Lead_Routing_Agent",
+        "responsibility": "Assigns leads and opportunities to the correct owner based on territory, segment, product interest, and round-robin rules.",
+        "tools": [
+          "CRM_API_Tool (assignment, territory lookup)",
+          "Rules_Config_Store (JSON/YAML-based routing policies)",
+          "Escalation_Notification_Tool (Slack/Email sandbox)"
+        ],
+        "human_approval": "For ambiguous leads (e.g., multiple territory matches, high ARR potential), proposes assignee and awaits sales-ops approval before executing assignment."
+      },
+      {
+        "name": "Pipeline_Hygiene_Agent",
+        "responsibility": "Monitors the pipeline for stale or inconsistent records (e.g., overdue close dates, contradictory stages/amounts, missing next steps) and proposes updates.",
+        "tools": [
+          "CRM_API_Tool (query opportunities, update fields, create tasks)",
+          "Rules_Engine (staleness thresholds, hygiene policies)",
+          "Notification_Tool (Slack/Email sandbox for suggestions)"
+        ],
+        "human_approval": "Operates in suggestion mode only: creates CRM tasks/comments or sends hygiene recommendations that must be accepted by reps or managers to take effect in the experimental phase."
+      },
+      {
+        "name": "Quote_Assistant_Agent",
+        "responsibility": "Given an approved opportunity and configured products/pricing rules, drafts quotes or order forms and routes them for approval.",
+        "tools": [
+          "Product_Catalog_API_Tool",
+          "Pricing_Rules_Engine",
+          "CRM/CPQ_API_Tool (create quote draft objects)",
+          "Document_Generation_Tool (synthetic PDFs/HTML in sandbox)"
+        ],
+        "human_approval": "All customer-facing quotes require AE and, for high-value or exception cases, sales management approval before being sent or logged as final."
+      },
+      {
+        "name": "Followup_Cadence_Agent",
+        "responsibility": "Creates and updates follow-up tasks and email drafts based on engagement signals and pipeline stage.",
+        "tools": [
+          "CRM_API_Tool (tasks, activities)",
+          "Email_Draft_Tool (draft only, no send in sandbox)",
+          "Engagement_Event_Store (synthetic signals from marketing automation or website tracking)"
+        ],
+        "human_approval": "AEs must approve outbound drafts before they are sent using the real email system; in the experiment, sending may be simulated to avoid real customers."
+      },
+      {
+        "name": "Forecast_Support_Agent",
+        "responsibility": "Analyzes pipeline changes and suggests adjustments or risk flags for the sales forecast.",
+        "tools": [
+          "CRM_API_Tool (opportunity history, stage changes)",
+          "Analytics_DB_Tool (write summarized views)",
+          "Dashboard_Export_Tool (CSV/JSON exports for BI)"
+        ],
+        "human_approval": "Forecast outputs are advisory only; sales leadership retains final forecast ownership."
+      }
+    ],
+    "orchestration": {
+      "pattern": "Central orchestrator with event-driven triggers",
+      "event_sources": [
+        "New lead created",
+        "Lead updated",
+        "Opportunity created/updated",
+        "Quote requested",
+        "Engagement event detected (e.g., email opened)",
+        "Forecast snapshot time reached (e.g., daily at 18:00)"
+      ],
+      "workflow_examples": [
+        "Lead created -> Lead_Enrichment_Agent -> Lead_Routing_Agent -> Followup_Cadence_Agent",
+        "Opportunity updated (stage, close date) -> Pipeline_Hygiene_Agent -> potential task creation",
+        "Quote requested -> Quote_Assistant_Agent -> approval workflow -> final quote draft",
+        "Nightly -> Forecast_Support_Agent -> write forecast suggestions"
+      ]
+    },
+    "governance_and_approvals": {
+      "high_risk_actions": [
+        "Sending external emails to real prospects/customers",
+        "Modifying quote prices or discounts",
+        "Changing opportunity stage to Closed Won/Lost",
+        "Reassigning high-value opportunities between reps"
+      ],
+      "approval_flows": {
+        "email_send": "Agent drafts email -> AE reviews in CRM/email UI -> AE edits/approves -> platform sends or logs synthetic sending.",
+        "quote_change": "Agent drafts quote -> AE review -> if discount > X% or ARR > Y, manager approval required -> quote marked final.",
+        "stage_change": "Agent suggests stage update -> rep must click 'accept' to apply.",
+        "owner_reassignment": "Agent proposes new owner -> sales ops must approve in routing dashboard."
+      },
+      "audit_trail": "All agent actions and suggestions recorded with timestamp, agent_id, input context hash, and human responder (accept/reject/edit); persisted in an agent_actions table or log index."
+    }
+  },
+  "workloads": [
+    {
+      "name": "Lead_Enrichment_and_Routing",
+      "description": "Evaluate manual vs. agentic enrichment and routing on newly created leads in the CRM.",
+      "population": "Synthetic or sandbox leads generated to resemble a mid-market B2B SaaS funnel, including firm size, industry, geography, and product-interest fields.",
+      "input_generation": {
+        "method": "Synthetic data generator script that creates leads with varying completeness and quality, including noisy or ambiguous data (e.g., personal vs. corporate emails).",
+        "volume": "At least 1,000 leads for a statistically meaningful comparison; 50% randomly assigned to baseline, 50% to treatment.",
+        "stratification": "Stratify on region, company size, inbound vs. outbound source to ensure balanced distribution across baseline and treatment."
+      },
+      "tasks_baseline": [
+        "Human sales-ops or SDR enriches lead fields based on web/LinkedIn/enrichment tool, logs time spent, and manually assigns owner based on documented routing rules."
+      ],
+      "tasks_treatment": [
+        "Lead_Enrichment_Agent and Lead_Routing_Agent automatically enrich and propose owner assignments; humans only review low-confidence or flagged cases per policy.",
+        "Humans can override any agent decisions and their actions are logged."
+      ]
+    },
+    {
+      "name": "Pipeline_Hygiene",
+      "description": "Evaluate how agentic assistance affects pipeline data cleanliness and the effort required to maintain it.",
+      "population": "Existing opportunities in a sandbox CRM, seeded with synthetic or anonymized data reflecting multiple stages, ages, and value bands.",
+      "input_generation": {
+        "method": "Snapshot of CRM opportunities cloned into sandbox, with intentional injection of data quality issues (e.g., missing next steps, unrealistic close dates, inconsistent stages vs. close probability).",
+        "volume": "At least 1,000 opportunities, randomly assigned to baseline or treatment groups at the opportunity level.",
+        "time_window": "Monitor hygiene over 4\u20136 weeks to capture multiple sales cycles and hygiene passes."
+      },
+      "tasks_baseline": [
+        "Managers and ops staff perform weekly or biweekly pipeline reviews and manually clean up records following their current practices."
+      ],
+      "tasks_treatment": [
+        "Pipeline_Hygiene_Agent scans and proposes updates, creates tasks for reps, and surfaces prioritized hygiene issues; reps and managers accept or reject suggestions.",
+        "Human time spent on hygiene tasks is logged for comparison."
+      ]
+    },
+    {
+      "name": "Quote_to_Order_Assistance",
+      "description": "Measure the impact of agentic support on the time and accuracy of preparing quotes and order forms.",
+      "population": "Opportunities reaching a predefined stage (e.g., Proposal/Quote) within the experimental period.",
+      "input_generation": {
+        "method": "Use real historical configurations to generate synthetic quote requests in sandbox (e.g., combinations of products, tiers, contract lengths, and discounts).",
+        "volume": "At least 200 quote events, split between baseline and treatment.",
+        "constraints": "No real customer data used unless fully anonymized; all documents generated in sandbox."
+      },
+      "tasks_baseline": [
+        "AEs manually construct quotes in CPQ or CRM based on product catalog and pricing policies, request approvals via existing channels, and log final quotes."
+      ],
+      "tasks_treatment": [
+        "Quote_Assistant_Agent generates initial quote drafts based on opportunity data and pricing rules; AEs and managers review, edit, and approve via the approval workflow.",
+        "Agent logs time-to-draft; humans log incremental time to finalize."
+      ]
+    },
+    {
+      "name": "Followup_and_Cycle_Time",
+      "description": "Evaluate whether agentic follow-up planning and nudges reduce lead-response and opportunity cycle times.",
+      "population": "Subset of leads and opportunities already in the Lead_Enrichment_and_Routing and Pipeline_Hygiene workloads, with follow-up behaviors tracked.",
+      "input_generation": {
+        "method": "Simulate engagement events (email opens/clicks, website visits) using a generator that feeds into the marketing automation sandbox.",
+        "volume": "At least 500 leads and 500 opportunities with tracked interactions during the experimental window.",
+        "covariates": "Segment by channel, deal size, and territory to evaluate heterogeneous effects."
+      },
+      "tasks_baseline": [
+        "Reps rely on standard CRM reminders, their own workflows, or marketing automation programs for follow-ups.",
+        "No AI agent proposes follow-up schedules or drafts messages."
+      ],
+      "tasks_treatment": [
+        "Followup_Cadence_Agent creates follow-up tasks and drafts messages according to playbooks; reps review and send (or in sandbox, simulate sending).",
+        "Time from events to follow-up and total AE task management time are recorded."
+      ]
+    },
+    {
+      "name": "Forecasting_Support",
+      "description": "Assess whether an advisory Forecast_Support_Agent can provide forecasts comparable in accuracy to manual-only forecasts while reducing human effort.",
+      "population": "All open opportunities above a minimum value threshold during the experimental period.",
+      "input_generation": {
+        "method": "Use historical opportunity trajectories and outcomes (anonymized/synthetic) replayed over time into the sandbox CRM.",
+        "period": "Simulate or run for 1\u20133 fiscal quarters to compare predicted vs. actual outcomes.",
+        "assignment": "Same portfolio of opportunities, but alternate between manual-only forecast cycles and manual+agent advisory cycles week-by-week or region-by-region."
+      },
+      "tasks_baseline": [
+        "Sales leaders and ops produce weekly/biweekly forecasts manually from CRM reports and spreadsheets."
+      ],
+      "tasks_treatment": [
+        "Forecast_Support_Agent produces a suggested forecast and risk annotations; humans adjust and finalize.",
+        "Time spent preparing forecasts is tracked."
+      ]
+    }
+  ],
+  "controls": {
+    "randomization": {
+      "method": "Uniform random assignment at lead/opportunity level within defined strata (e.g., segment, region, ARR band) to baseline or treatment.",
+      "implementation": "Randomization script or service that tags each new lead/opportunity with experiment_group \u2208 {baseline, treatment} at creation time and routes it to the corresponding workflow.",
+      "verification": "Regular checks (e.g., daily) to confirm balanced distributions of key attributes across groups."
+    },
+    "blinding": {
+      "operator_blinding": "Where feasible, sales reps and ops are not explicitly told which records are in which group; they only see that some records come with AI suggestions. Full blinding may not be possible but awareness should be minimized to reduce behavior bias.",
+      "analyst_blinding": "Analysts evaluating results should work from de-identified datasets where group labels are masked until metric computations and cleaning rules are finalized."
+    },
+    "timeframe": {
+      "ramp_up_period": "1\u20132 weeks to stabilize agent behavior and fix integration issues; data from this period is logged but excluded from primary analysis.",
+      "measurement_period": "At least 4\u20138 weeks for enrichment/routing/hygiene/quotes; longer (1\u20133 quarters) for forecast accuracy evaluations."
+    },
+    "traffic_splits": {
+      "default_split": "50% baseline / 50% treatment during main measurement period.",
+      "staged_rollout": "Optionally start at 10\u201320% treatment traffic and gradually increase to 50% as stability is confirmed."
+    },
+    "environmental_controls": {
+      "sandbox_isolation": "Run in a sandbox or mirrored CRM environment using synthetic or anonymized data so that experimental writes do not affect live customers.",
+      "policy_freeze": "Freeze major sales process changes (e.g., compensation plans, routing rules) during the main measurement window or carefully log and control for them.",
+      "training_and_docs": "Provide both groups with equivalent non-agentic process training; additional training specific to interacting with the agents is documented and timestamped."
+    }
+  },
+  "metrics": [
+    {
+      "name": "lead_enrichment_time_per_lead",
+      "unit": "seconds/lead",
+      "description": "Average human time spent enriching each lead (baseline: full manual; treatment: review/override time only)."
+    },
+    {
+      "name": "routing_decision_time_per_lead",
+      "unit": "seconds/lead",
+      "description": "Elapsed time from lead creation in CRM to stable owner assignment."
+    },
+    {
+      "name": "lead_response_time",
+      "unit": "minutes",
+      "description": "Elapsed time from lead creation to first outbound contact attempt logged (call, email, or task creation)."
+    },
+    {
+      "name": "pipeline_hygiene_hours_per_week",
+      "unit": "hours/week",
+      "description": "Aggregate human hours spent on pipeline review and data clean-up activities per week."
+    },
+    {
+      "name": "pipeline_data_quality_score",
+      "unit": "index_0_100",
+      "description": "Composite index combining completeness (required fields filled), consistency (fields align with rules), and freshness (no stale opportunities beyond thresholds)."
+    },
+    {
+      "name": "quote_cycle_time",
+      "unit": "hours",
+      "description": "Elapsed time from quote request initiation to final approved quote ready to send to customer (or synthetic equivalent)."
+    },
+    {
+      "name": "quote_error_rate",
+      "unit": "percent",
+      "description": "Percentage of quotes requiring correction due to pricing, configuration, or policy errors before approval."
+    },
+    {
+      "name": "admin_hours_per_opportunity",
+      "unit": "hours/opportunity",
+      "description": "Total human non-selling time logged on an opportunity for enrichment, routing corrections, data updates, quote prep, and admin follow-ups."
+    },
+    {
+      "name": "opportunity_cycle_time",
+      "unit": "days",
+      "description": "Elapsed time from opportunity creation to closure (Won or Lost)."
+    },
+    {
+      "name": "forecast_absolute_error",
+      "unit": "currency_units",
+      "description": "Absolute difference between forecasted revenue for a period and actual realized revenue for the same period."
+    },
+    {
+      "name": "forecast_mape",
+      "unit": "percent",
+      "description": "Mean Absolute Percentage Error of forecasts compared to actuals."
+    },
+    {
+      "name": "agent_suggestion_acceptance_rate",
+      "unit": "percent",
+      "description": "Proportion of agent-suggested actions (updates, assignments, quotes, follow-ups) that are accepted without modification by humans."
+    },
+    {
+      "name": "agent_override_rate",
+      "unit": "percent",
+      "description": "Proportion of agent actions that are overridden or corrected by humans after execution."
+    },
+    {
+      "name": "user_trust_score",
+      "unit": "likert_1_5",
+      "description": "Average rating from periodic surveys of sales reps and ops staff on their trust in and perceived usefulness of the agents."
+    },
+    {
+      "name": "system_cost_per_record",
+      "unit": "currency_units/record",
+      "description": "Estimated compute + API cost per processed lead/opportunity in the treatment group (LLM calls, enrichment APIs, infra)."
+    }
+  ],
+  "success_criteria": {
+    "primary": [
+      {
+        "metric": "admin_hours_per_opportunity",
+        "comparison": "treatment_vs_baseline",
+        "threshold": ">= 40% reduction",
+        "statistical_test": "two_sample_t_test_or_nonparametric_alternative",
+        "significance_level": 0.05
+      },
+      {
+        "metric": "lead_response_time",
+        "comparison": "treatment_vs_baseline",
+        "threshold": ">= 20% reduction in median",
+        "statistical_test": "mann_whitney_u_test_on_median_differences",
+        "significance_level": 0.05
+      },
+      {
+        "metric": "quote_cycle_time",
+        "comparison": "treatment_vs_baseline",
+        "threshold": ">= 20% reduction in mean or median",
+        "statistical_test": "two_sample_t_test_or_mann_whitney_u",
+        "significance_level": 0.05
+      }
+    ],
+    "guardrails": [
+      {
+        "metric": "pipeline_data_quality_score",
+        "comparison": "treatment_vs_baseline",
+        "threshold": "treatment_score >= baseline_score - 2 points",
+        "description": "Pipeline data quality in the treatment group must not materially degrade."
+      },
+      {
+        "metric": "quote_error_rate",
+        "comparison": "treatment_vs_baseline",
+        "threshold": "treatment_error_rate <= baseline_error_rate + 2 percentage_points",
+        "description": "Error rate for quotes must not increase meaningfully under agent assistance."
+      },
+      {
+        "metric": "forecast_mape",
+        "comparison": "treatment_vs_baseline",
+        "threshold": "treatment_mape <= baseline_mape + 5 percentage_points",
+        "description": "Forecast accuracy should not be significantly worse with agent support."
+      }
+    ],
+    "secondary": [
+      {
+        "metric": "agent_suggestion_acceptance_rate",
+        "threshold": ">= 60%",
+        "description": "Indicates that proposed actions are generally reasonable and trusted."
+      },
+      {
+        "metric": "user_trust_score",
+        "threshold": ">= 3.5_on_5_point_scale",
+        "description": "Operators report moderate or higher trust in agents."
+      },
+      {
+        "metric": "system_cost_per_record",
+        "threshold": "Agentic incremental cost per record yields estimated ROI >= 2x when combined with labor savings.",
+        "description": "Basic economic viability check combining system cost per record with observed admin-hours reduction and estimated labor costs."
+      }
+    ]
+  },
+  "failure_modes": [
+    {
+      "name": "data_quality_degradation",
+      "description": "Agent updates or suggestions systematically introduce inaccurate or inconsistent data into CRM (e.g., wrong company sizes, misclassified industries, incorrect stages).",
+      "detection": "Monitor pipeline_data_quality_score, agent_override_rate, and targeted audits of a random sample of records.",
+      "mitigation": "Tighten schemas, add validation rules, increase confidence thresholds, move some actions from auto-execute to suggestion-only, retrain or refine prompts."
+    },
+    {
+      "name": "routing_bias_or_instability",
+      "description": "Lead_Routing_Agent disproportionately routes high-value leads to certain reps or causes frequent reassignments.",
+      "detection": "Analyze distribution of lead values and counts by rep across groups; monitor reassignment rates and complaints.",
+      "mitigation": "Enforce round-robin fairness constraints, cap reassignments per record, require approvals for reassigning high-ARR opportunities."
+    },
+    {
+      "name": "agent_loops_or_duplicate_actions",
+      "description": "Orchestration mistakes cause agents to repeatedly act on the same record (e.g., repeatedly suggesting the same hygiene fix).",
+      "detection": "Monitor logs for repeated actions on identical records within short time windows; check for unusual spikes in agent calls.",
+      "mitigation": "Introduce idempotency keys, action cool-down periods, and explicit state flags (e.g., hygiene_checked_at)."
+    },
+    {
+      "name": "user_rejection_and_bypass",
+      "description": "Sales reps and ops staff ignore or bypass agent suggestions, resulting in low adoption and biased metrics.",
+      "detection": "Low agent_suggestion_acceptance_rate, low interaction counts, qualitative feedback from surveys and interviews.",
+      "mitigation": "Refine UX, improve suggestion quality, incorporate user feedback loops, adjust incentives, provide training and quick explanations of agent suggestions."
+    },
+    {
+      "name": "forecast_overreliance",
+      "description": "Leaders rely too heavily on Forecast_Support_Agent outputs, even if performance is not yet validated.",
+      "detection": "Discrepancies between agent-advised forecasts and final human overrides; large forecast errors combined with low override activity.",
+      "mitigation": "Clearly label forecasts as advisory, require explicit review steps, and only consider automation of forecast inputs after sufficient validation periods."
+    },
+    {
+      "name": "cost_overrun",
+      "description": "LLM and enrichment API usage drives higher-than-expected operational costs per record.",
+      "detection": "Monitor system_cost_per_record and total experiment cost against budgeted thresholds.",
+      "mitigation": "Cache enrichment results, reduce unnecessary LLM calls, tune model sizes or sampling strategies, and narrow tool invocation scope."
+    },
+    {
+      "name": "security_or_privacy_misconfigurations",
+      "description": "Agents gain more access than needed or data leaves the sandbox environment inadvertently.",
+      "detection": "Access control and audit log reviews, penetration testing in sandbox, automated detection of cross-environment writes.",
+      "mitigation": "Enforce least-privilege for agent credentials, network segmentation, data masking/anonymization, and routine security reviews."
+    }
+  ],
+  "required_environment": {
+    "systems": {
+      "crm": "Sandbox instance of a mainstream CRM (e.g., Salesforce, HubSpot, Dynamics) with API access and the ability to define custom fields and workflows.",
+      "marketing_automation": "Sandbox environment for marketing automation or a synthetic engagement event generator integrated with CRM.",
+      "communication_tools": "Sandbox or test tenants for email and messaging (e.g., Office 365 test accounts, Slack dev workspace) for notifications and draft emails.",
+      "agent_platform": "Python-based or similar orchestration framework to host agents, with support for LLM tool invocation, queues, and logging (could use open-source agentic frameworks or custom code).",
+      "datastore": "Relational database or data warehouse (e.g., Postgres, BigQuery) for logging agent actions, metrics, and experiment assignments.",
+      "monitoring": "Dashboarding/BI tool (e.g., Metabase, Grafana, or CRM analytics) to visualize metrics and experiment results."
+    },
+    "data": {
+      "synthetic_or_anonymized_crm_export": "Leads, accounts, contacts, opportunities, and historical quotes with all sensitive fields masked or synthetic data generated following realistic distributions.",
+      "product_and_pricing_catalog": "Synthetic product list, SKUs, price tiers, discount rules, and approval thresholds.",
+      "routing_and_territory_rules": "Explicit JSON/YAML configuration for current routing rules to be shared between baseline documentation and agent logic.",
+      "engagement_events": "Synthetic email, website, and marketing interactions tied to leads and contacts."
+    },
+    "models_and_apis": {
+      "llm": "Access to at least one modern LLM via API or on-prem deployment with support for tool use and structured outputs.",
+      "enrichment": "Real or mocked enrichment APIs; if real, restricted to synthetic or consented test domains.",
+      "authentication": "Service accounts or OAuth apps for CRM and communication tools with restricted permissions."
+    },
+    "infrastructure": {
+      "runtime": "Containerized agent services (e.g., Docker, Kubernetes) or managed compute that can scale based on workload.",
+      "queues": "Message queues (e.g., RabbitMQ, SQS, Pub/Sub) or CRM-native event hooks for event-driven orchestration.",
+      "secrets_management": "Secure storage for API keys and credentials (e.g., Vault, parameter store)."
+    }
+  },
+  "run_instructions": [
+    {
+      "step": 1,
+      "title": "Prepare Sandbox CRM and Synthetic Dataset",
+      "actions": [
+        "Clone the production CRM schema into a sandbox environment (objects, fields, validation rules) without copying raw PII or commercial data.",
+        "Generate synthetic or anonymized leads, accounts, contacts, opportunities, and quote history that resemble a mid-market B2B SaaS pipeline.",
+        "Inject controlled data-quality issues (missing fields, stale opportunities) to test pipeline hygiene agents.",
+        "Configure product catalog, pricing, routing, and territory rules as structured configuration files (JSON/YAML) used by both baseline documentation and treatment agents."
+      ]
+    },
+    {
+      "step": 2,
+      "title": "Implement Experiment Assignment and Logging",
+      "actions": [
+        "Create an experiment_assignments table keyed by record_id with fields: experiment_id, group (baseline/treatment), assigned_at, and stratification variables.",
+        "Implement a service or CRM trigger that, upon lead/opportunity creation, calls a randomization function and records the assignment.",
+        "Ensure that both baseline and treatment workflows log all relevant actions (manual or agentic) with timestamps, user/agent identifiers, and time_spent fields into an actions_log table."
+      ]
+    },
+    {
+      "step": 3,
+      "title": "Implement Baseline Time-Tracking Overlays",
+      "actions": [
+        "Instrument baseline manual workflows with minimal friction time-tracking (e.g., browser plugin, simple timers inside CRM, or post-task self-report forms).",
+        "Pilot with a small group of reps and ops staff to calibrate and ensure consistent use; refine UI/UX to reduce under-reporting and fatigue.",
+        "Define clear guidelines on what constitutes 'admin work' vs. 'selling time' so participants log consistently."
+      ]
+    },
+    {
+      "step": 4,
+      "title": "Implement Multi-Agent Orchestration Layer",
+      "actions": [
+        "Deploy an agent orchestration service that listens to CRM events via webhooks, polling, or message queues.",
+        "Implement each agent (Lead_Enrichment_Agent, Lead_Routing_Agent, Pipeline_Hygiene_Agent, Quote_Assistant_Agent, Followup_Cadence_Agent, Forecast_Support_Agent) as separate components with clear tool interfaces.",
+        "Connect agents to CRM, enrichment, pricing, and communication tools using scoped service accounts and enforce least-privilege access.",
+        "Implement robust logging in the agent layer, including input payloads (hashed or redacted), outputs, chosen tools, token usage, and any encountered errors."
+      ]
+    },
+    {
+      "step": 5,
+      "title": "Configure Human Approval and Guardrails",
+      "actions": [
+        "Define policies for which actions require human approval vs. can be auto-executed, and translate them into agent and orchestrator configuration.",
+        "Integrate approval flows into CRM UIs or workflow tools so that reps and managers can accept/decline agent suggestions with minimal friction.",
+        "Add explicit labels and explanations to agent suggestions so humans understand what the agent is proposing and why.",
+        "Verify that all high-risk actions (e.g., quote finalization, external communications, stage changes to Closed Won/Lost) cannot occur without appropriate approval in both baseline and treatment groups."
+      ]
+    },
+    {
+      "step": 6,
+      "title": "Conduct Ramp-Up and Sanity Checks",
+      "actions": [
+        "Run agents in shadow mode on a subset of records (e.g., 10\u201320% traffic) while humans still perform full manual tasks; log agent outputs and compare with human decisions without acting on them.",
+        "Audit a random sample of agent suggestions for accuracy and policy conformance; fix prompt templates, rules, and tool configurations as needed.",
+        "Once performance is acceptable, enable agents to perform suggestion-mode actions in treatment group; gradually enable auto-execution for low-risk actions where appropriate."
+      ]
+    },
+    {
+      "step": 7,
+      "title": "Run Main Experiment",
+      "actions": [
+        "Activate full 50/50 baseline/treatment traffic split for the defined measurement period.",
+        "Monitor operational dashboards daily for anomalies in key metrics (e.g., quote errors, data quality, system errors, override rates).",
+        "Collect weekly qualitative feedback from a sample of reps and ops staff regarding agent usability and trust.",
+        "Avoid introducing major process or compensation changes during the period; if unavoidable, document changes with timestamps for later analysis."
+      ]
+    },
+    {
+      "step": 8,
+      "title": "Compute Metrics and Analyze Results",
+      "actions": [
+        "Extract experiment data into an analysis environment, joining CRM data, experiment_assignments, and actions_log tables.",
+        "Compute per-record metrics (e.g., admin_hours_per_opportunity, lead_response_time, quote_cycle_time) and aggregate/week-level metrics (e.g., pipeline_hygiene_hours_per_week, pipeline_data_quality_score).",
+        "Perform statistical tests specified in success_criteria to assess differences between baseline and treatment groups.",
+        "Segment results by region, deal size, and channel to identify subpopulations where the agentic system performs particularly well or poorly."
+      ]
+    },
+    {
+      "step": 9,
+      "title": "Review Experimental Results and Refine Agent Design",
+      "actions": [
+        "Compare observed metrics against success and guardrail thresholds; identify trade-offs (e.g., time savings vs. small accuracy changes).",
+        "Examine failure modes (e.g., cases with high override rates or errors) and trace back to specific prompts, tools, or workflows.",
+        "Iteratively refine agent prompts, rules, and approval thresholds, then re-run smaller targeted experiments or canary rollouts to validate improvements.",
+        "Document lessons learned and adaptation guidelines so readers can replicate, adapt, or extend these patterns to their own sales stacks and processes."
+      ]
+    }
+  ],
+  "evidence_schema": {
+    "tables": [
+      {
+        "name": "experiment_assignments",
+        "primary_key": [
+          "record_id",
+          "experiment_id"
+        ],
+        "fields": [
+          {
+            "name": "experiment_id",
+            "type": "string"
+          },
+          {
+            "name": "record_id",
+            "type": "string"
+          },
+          {
+            "name": "record_type",
+            "type": "enum",
+            "values": [
+              "lead",
+              "opportunity",
+              "quote"
+            ]
+          },
+          {
+            "name": "group",
+            "type": "enum",
+            "values": [
+              "baseline",
+              "treatment"
+            ]
+          },
+          {
+            "name": "assigned_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "segment",
+            "type": "string"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "arr_band",
+            "type": "string"
+          }
+        ]
+      },
+      {
+        "name": "actions_log",
+        "primary_key": [
+          "action_id"
+        ],
+        "fields": [
+          {
+            "name": "action_id",
+            "type": "string"
+          },
+          {
+            "name": "experiment_id",
+            "type": "string"
+          },
+          {
+            "name": "record_id",
+            "type": "string"
+          },
+          {
+            "name": "actor_type",
+            "type": "enum",
+            "values": [
+              "human",
+              "agent"
+            ]
+          },
+          {
+            "name": "actor_id",
+            "type": "string"
+          },
+          {
+            "name": "agent_name",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "action_type",
+            "type": "string"
+          },
+          {
+            "name": "timestamp",
+            "type": "timestamp"
+          },
+          {
+            "name": "duration_seconds",
+            "type": "float",
+            "nullable": true
+          },
+          {
+            "name": "input_context_hash",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "output_summary",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "requires_approval",
+            "type": "boolean"
+          },
+          {
+            "name": "approval_status",
+            "type": "enum",
+            "values": [
+              "not_required",
+              "pending",
+              "approved",
+              "rejected"
+            ],
+            "default": "not_required"
+          },
+          {
+            "name": "approved_by",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "approved_at",
+            "type": "timestamp",
+            "nullable": true
+          },
+          {
+            "name": "overridden",
+            "type": "boolean",
+            "default": false
+          },
+          {
+            "name": "override_reason",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "llm_tokens_prompt",
+            "type": "integer",
+            "nullable": true
+          },
+          {
+            "name": "llm_tokens_completion",
+            "type": "integer",
+            "nullable": true
+          },
+          {
+            "name": "api_cost",
+            "type": "float",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "name": "crm_records_snapshot",
+        "primary_key": [
+          "record_id",
+          "snapshot_at"
+        ],
+        "fields": [
+          {
+            "name": "record_id",
+            "type": "string"
+          },
+          {
+            "name": "record_type",
+            "type": "enum",
+            "values": [
+              "lead",
+              "opportunity",
+              "quote"
+            ]
+          },
+          {
+            "name": "snapshot_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "owner_id",
+            "type": "string"
+          },
+          {
+            "name": "segment",
+            "type": "string"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "arr_value",
+            "type": "float",
+            "nullable": true
+          },
+          {
+            "name": "stage",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "close_date",
+            "type": "date",
+            "nullable": true
+          },
+          {
+            "name": "next_step",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "data_completeness_score",
+            "type": "float",
+            "nullable": true
+          },
+          {
+            "name": "data_consistency_score",
+            "type": "float",
+            "nullable": true
+          },
+          {
+            "name": "data_freshness_score",
+            "type": "float",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "name": "lead_and_opportunity_events",
+        "primary_key": [
+          "event_id"
+        ],
+        "fields": [
+          {
+            "name": "event_id",
+            "type": "string"
+          },
+          {
+            "name": "record_id",
+            "type": "string"
+          },
+          {
+            "name": "event_type",
+            "type": "string"
+          },
+          {
+            "name": "timestamp",
+            "type": "timestamp"
+          },
+          {
+            "name": "metadata",
+            "type": "json"
+          }
+        ]
+      },
+      {
+        "name": "forecasts",
+        "primary_key": [
+          "forecast_id"
+        ],
+        "fields": [
+          {
+            "name": "forecast_id",
+            "type": "string"
+          },
+          {
+            "name": "experiment_id",
+            "type": "string"
+          },
+          {
+            "name": "period_start",
+            "type": "date"
+          },
+          {
+            "name": "period_end",
+            "type": "date"
+          },
+          {
+            "name": "group",
+            "type": "enum",
+            "values": [
+              "baseline",
+              "treatment"
+            ]
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "created_by",
+            "type": "string"
+          },
+          {
+            "name": "forecast_value",
+            "type": "float"
+          },
+          {
+            "name": "actual_value",
+            "type": "float",
+            "nullable": true
+          },
+          {
+            "name": "preparation_duration_seconds",
+            "type": "float",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "name": "user_surveys",
+        "primary_key": [
+          "response_id"
+        ],
+        "fields": [
+          {
+            "name": "response_id",
+            "type": "string"
+          },
+          {
+            "name": "user_id",
+            "type": "string"
+          },
+          {
+            "name": "role",
+            "type": "string"
+          },
+          {
+            "name": "experiment_id",
+            "type": "string"
+          },
+          {
+            "name": "submitted_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "trust_score",
+            "type": "integer"
+          },
+          {
+            "name": "perceived_efficiency_gain",
+            "type": "integer"
+          },
+          {
+            "name": "open_feedback",
+            "type": "string",
+            "nullable": true
+          }
+        ]
+      }
+    ],
+    "derived_metrics": [
+      {
+        "name": "admin_hours_per_opportunity",
+        "source": "actions_log",
+        "definition": "For each opportunity, sum duration_seconds for actions where actor_type = 'human' and action_type in {enrichment, routing, hygiene_update, quote_prep, admin_task}, then divide by 3600."
+      },
+      {
+        "name": "lead_response_time",
+        "source": "lead_and_opportunity_events",
+        "definition": "For each lead, time difference between event_type='lead_created' and first event_type in {'outbound_email_sent', 'call_logged', 'task_created_for_followup'}."
+      },
+      {
+        "name": "pipeline_data_quality_score",
+        "source": "crm_records_snapshot",
+        "definition": "Weighted average of data_completeness_score, data_consistency_score, and data_freshness_score for all open opportunities at regular snapshot times."
+      },
+      {
+        "name": "quote_cycle_time",
+        "source": "lead_and_opportunity_events",
+        "definition": "For each quote, difference between event_type='quote_requested' and event_type='quote_final_approved'."
+      },
+      {
+        "name": "quote_error_rate",
+        "source": "actions_log",
+        "definition": "Number of quotes with at least one action_type='quote_correction' divided by total quotes in group."
+      },
+      {
+        "name": "forecast_mape",
+        "source": "forecasts",
+        "definition": "Mean over periods of |forecast_value - actual_value| / max(actual_value, epsilon), expressed as a percentage."
+      },
+      {
+        "name": "system_cost_per_record",
+        "source": "actions_log",
+        "definition": "Total api_cost for agent actions in treatment group divided by the number of unique leads/opportunities processed in that group."
+      }
+    ],
+    "reporting": {
+      "required_plots": [
+        "Distribution plots (histograms/boxplots) of admin_hours_per_opportunity for baseline vs. treatment.",
+        "Kaplan-Meier or cumulative density plots of lead_response_time and quote_cycle_time for both groups.",
+        "Time series of pipeline_data_quality_score over the experiment period for baseline and treatment.",
+        "Bar charts of forecast_absolute_error and forecast_mape per period by group.",
+        "Stacked bar or heatmaps of agent_suggestion_acceptance_rate and agent_override_rate by agent type."
+      ],
+      "required_tables": [
+        "Summary table of all primary and guardrail metrics with baseline mean/median, treatment mean/median, absolute and relative differences, and p-values.",
+        "Segmented results by region, deal size, and channel for key metrics.",
+        "Catalog of identified failure modes with example records, root-cause analysis, and mitigation steps taken."
+      ]
+    }
+  }
+}

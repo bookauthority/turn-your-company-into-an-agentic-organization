@@ -1,0 +1,652 @@
+{
+  "experiment_id": "exp-ch11-agentic-internal-services-hr-it-v1",
+  "hypothesis": "For HR administration and IT helpdesk workflows in a mid-sized organization (300\u20131500 employees), replacing a primarily manual, human-only ticket queue with a supervised, agentic workflow (HR and IT agents with knowledge + tools + approvals) will: (a) reduce median time-to-first-response and median time-to-resolution by at least 30%, (b) preserve or improve internal NPS/CSAT by at least 2 points on a 0\u201310 scale, and (c) reduce human staff handling time per ticket by at least 25%, without increasing privacy or access-control violations beyond an acceptable threshold (zero verified critical incidents).",
+  "baseline": {
+    "description": "Current-state, human-only internal services for HR administration and IT helpdesk operating through a standard ticketing system. All triage, information gathering, resolution, and communications are done by human agents using their usual tools (HRIS, identity management, knowledge base, email/chat, and IT ticketing). No LLM agents participate in decision-making or communication.",
+    "workflow_characteristics": {
+      "routing": "Tickets arrive via a self-service portal or email and are queued to HR or IT teams based on simple rules (forms, categories, or manual triage by a coordinator).",
+      "hr_examples": [
+        "Onboarding: creating or validating employee records in HRIS, requesting accounts from IT, scheduling orientation, sending welcome packages.",
+        "Employment changes: processing manager, title, location, or compensation changes in HRIS and notifying stakeholders.",
+        "Benefits and policy FAQs: answering questions about vacation, leave policies, benefits enrollment, and internal policies."
+      ],
+      "it_examples": [
+        "Access requests: adding/removing access to standard applications via identity management tools.",
+        "Issue resolution: troubleshooting VPN, email, laptop, and SaaS application issues.",
+        "Password/account issues: unlocks, resets, and guidance on self-service flows."
+      ],
+      "queue_handling": {
+        "triage": "Human triager reads ticket description, classifies it, and assigns priority and assignee.",
+        "resolution": "Assignee manually accesses HRIS, IAM, or other tools; consults internal knowledge bases or colleagues; then updates and closes tickets.",
+        "communication": "All updates and clarifications are written by humans via ticket comments, email, or chat."
+      },
+      "governance_and_privacy": {
+        "access_control": "Role-based access configured in HRIS and IAM for human staff; no special sandboxing for experiments.",
+        "privacy_controls": "Existing policies for PII/PHI; training-based compliance enforcement, no AI tools.",
+        "audit_trails": "Ticketing system logs human actions; HRIS/IAM contain system logs for changes."
+      }
+    },
+    "measurement_setup": {
+      "period": "Collect baseline data for at least 4 consecutive weeks prior to enabling any agentic workflow, under normal staffing and demand conditions.",
+      "data_sources": [
+        "Ticketing system exports (HR and IT queues).",
+        "HRIS audit logs for HR transactions (onboardings, changes).",
+        "Identity/IT system logs for account/access changes.",
+        "Internal satisfaction surveys (post-ticket NPS/CSAT).",
+        "Time-tracking or self-reported handling time where available."
+      ],
+      "baseline_metrics_collection": {
+        "tickets_included": "HR and IT tickets for the selected experiment workloads only (see workloads section).",
+        "exclusions": [
+          "Tickets that contain legal investigations, disciplinary actions, executive-level sensitive HR matters.",
+          "Security incidents and severe outages handled outside normal IT helpdesk.",
+          "Tickets reopened after >30 days (treated as new)."
+        ]
+      }
+    }
+  },
+  "treatment": {
+    "description": "Supervised agentic HR and IT support workflow where LLM-based agents handle triage, knowledge retrieval, and execution of low-risk actions via tools (HRIS sandbox, IAM sandbox, ticketing API), with humans providing approvals for higher-risk actions and handling complex edge cases.",
+    "agentic_workflow_components": {
+      "hr_triage_agent": {
+        "role": "Reads incoming HR-related tickets, classifies request type and priority, extracts structured fields (employee ID, start date, manager, location), and routes to the appropriate queue or automation path.",
+        "tools": [
+          "Ticketing API: read ticket text, update fields (category, priority), reassign ticket.",
+          "HRIS read-only API (sandbox or production with scoped access): validate employee identity, retrieve basic profile (name, role, department, manager)."
+        ]
+      },
+      "hr_resolution_agent": {
+        "role": "Proposes or performs low-risk HR operations and drafts communications based on internal policy docs and HRIS data.",
+        "low_risk_actions": [
+          "Draft onboarding task checklist for HR team (no direct writes to HRIS).",
+          "Generate employee-facing explanations for policies using approved templates.",
+          "Generate internal HR notes or task lists for manual execution by HR staff."
+        ],
+        "medium_risk_actions": [
+          "Prepare structured change requests (JSON records) that HR staff review and then apply in HRIS manually.",
+          "In sandbox: write to HRIS test environment to simulate changes for experimental evaluation."
+        ],
+        "tools": [
+          "RAG-based knowledge tool over HR policies and FAQs.",
+          "HRIS read-only API (and write-only to sandbox environment).",
+          "Ticketing API for status updates and draft replies."
+        ],
+        "human_in_the_loop": "All employee-facing text and any suggested data-change payloads must be explicitly approved by HR staff before being sent or applied."
+      },
+      "it_triage_agent": {
+        "role": "Reads incoming IT tickets, classifies issue type, urgency, and device/application context, suggests next steps or automation path, and may respond directly for well-understood FAQs.",
+        "tools": [
+          "Ticketing API: read, classify, assign, update.",
+          "RAG over IT knowledge base (runbooks, FAQ documents)."
+        ],
+        "behaviors": [
+          "For missing information, immediately ask clarifying questions in ticket thread using templates.",
+          "Apply categorization and priority mapping rules provided by IT leadership."
+        ]
+      },
+      "it_resolution_agent": {
+        "role": "Provide step-by-step troubleshooting guidance, resolve routine issues, and, where allowed, orchestrate low-risk IAM actions in sandbox.",
+        "low_risk_actions": [
+          "Suggest known-issue troubleshooting steps for VPN, email, or SaaS tools.",
+          "Point user to self-service password reset or known status pages.",
+          "Draft commands or steps for technicians to execute."
+        ],
+        "medium_risk_actions": [
+          "In sandbox: call identity management API to create or modify non-production test accounts.",
+          "Prepare access-change requests that technicians review and apply in production tools."
+        ],
+        "tools": [
+          "RAG over IT runbooks and FAQ.",
+          "Identity/IAM sandbox API with limited scope.",
+          "Ticketing API for comments and field updates."
+        ],
+        "human_in_the_loop": "All production IAM and device actions are performed by humans; the agent only operates directly on sandbox or drafts instructions."
+      },
+      "privacy_guard_agent": {
+        "role": "Review agent-generated content and tool calls for potential privacy, consent, or data-minimization violations before they are shown to end users or executed.",
+        "rules": [
+          "No inclusion of sensitive HR data (salary, performance reviews, medical/leave reasons) in communications unless explicitly required and template-approved.",
+          "No cross-employee data exposure (e.g., showing one employee another employee\u2019s data).",
+          "No speculative diagnosis of personal issues or non-policy-based advice.",
+          "Data minimization on logs: redact PII from experiment logs outside the HR/IT systems of record."
+        ],
+        "implementation": "A separate LLM prompt chain that evaluates draft messages and tool calls against a set of policies, returning either APPROVE, REWRITE_WITH_REDACTION, or ESCALATE_TO_HUMAN."
+      }
+    },
+    "treatment_modes": {
+      "mode_a_assistive": {
+        "description": "Agents operate as assistive copilots; humans remain primary owners of tickets. Agents propose classifications, draft replies, and structured changes; HR/IT staff approve or modify all outputs before they are sent or executed.",
+        "intended_use": "Phase 1 of experiment; safest mode to collect quality and performance data.",
+        "ui_integration": "Copilot panel in ticketing UI or separate web interface showing agent suggestions alongside tickets."
+      },
+      "mode_b_partially_autonomous": {
+        "description": "Agents autonomously handle low-risk, well-defined ticket types end-to-end (e.g., standard FAQ replies, status checks), with post-hoc sampling review by humans. All medium/high-risk tickets remain in assistive mode.",
+        "entry_criteria": [
+          "At least 2 weeks of mode A data with no critical privacy or access incidents.",
+          "Measured misclassification and content error rates below predefined thresholds (e.g., <2% for fully handled tickets).",
+          "Approval from HR, IT, and security stakeholders."
+        ],
+        "safety_mechanisms": [
+          "Whitelist of ticket types and categories eligible for full automation.",
+          "Rate-limiting on autonomous actions per hour/day.",
+          "Automatic fallback to human handling on model uncertainty or policy triggers."
+        ]
+      }
+    }
+  },
+  "workloads": [
+    {
+      "id": "wl-hr-onboarding",
+      "name": "HR Employee Onboarding Administration",
+      "description": "Tickets related to onboarding new hires, including creation/validation of employee records, generation of onboarding checklists, and communications to new hires and managers.",
+      "scope": {
+        "included_ticket_types": [
+          "Standard full-time employee onboarding.",
+          "Intern/contractor onboarding with predefined templates."
+        ],
+        "excluded_ticket_types": [
+          "Executive-level or highly sensitive hires.",
+          "Cases involving relocation, immigration, or legal complexity.",
+          "M&A-related mass onboardings."
+        ]
+      },
+      "baseline_process": "HR coordinator reads ticket or intake form, manually inputs or verifies data in HRIS, sends welcome communications using templates, and creates a set of tasks for other departments (IT, facilities).",
+      "treatment_process": "HR triage and HR resolution agents extract structured onboarding data, validate against HRIS, and generate a proposed onboarding checklist and communications. HR staff review and approve agent outputs, then execute or trigger downstream tasks."
+    },
+    {
+      "id": "wl-hr-changes-faq",
+      "name": "HR Employment Changes and Policy FAQs",
+      "description": "Routine HR tickets involving job/manager/location changes and standard policy questions about leave, benefits, and workplace policies.",
+      "scope": {
+        "included_ticket_types": [
+          "Manager or department changes not involving comp or legal disputes.",
+          "Location changes within supported geographies.",
+          "Questions answered purely by referencing existing policies (e.g., leave accrual rules, holiday schedules, benefits eligibility windows)."
+        ],
+        "excluded_ticket_types": [
+          "Compensation changes above threshold or requiring executive approval.",
+          "Performance management, disciplinary actions, grievances.",
+          "Custom or ambiguous policy interpretations requiring legal review."
+        ]
+      },
+      "baseline_process": "HR staff read tickets, reference internal policy documents or HRIS, manually compute eligibility or changes, update HRIS, and compose responses.",
+      "treatment_process": "HR agents use RAG over policy documents to draft answers, pre-structure change requests, and propose wording. HR staff review, correct as needed, and either send responses manually or use automation where allowed in sandbox."
+    },
+    {
+      "id": "wl-it-access-requests",
+      "name": "IT Standard Access Requests",
+      "description": "Tickets requesting access to standard applications or shared resources (e.g., adding/removing users from common SaaS tools or distribution lists).",
+      "scope": {
+        "included_ticket_types": [
+          "Access to predefined, low-risk apps where entitlement patterns are clear and standardized.",
+          "Distribution list membership changes for standard teams or projects.",
+          "Role-based profile updates for existing employees."
+        ],
+        "excluded_ticket_types": [
+          "Privileged access (admin, root, security-sensitive roles).",
+          "Requests involving external vendors, shared credentials, or unusual entitlements.",
+          "Incidents that overlap with security or compliance investigations."
+        ]
+      },
+      "baseline_process": "IT helpdesk staff read requests, check requester and approval status, manually perform changes in IAM or apps, and close tickets with confirmation messages.",
+      "treatment_process": "IT triage agent validates requester identity from ticket/HRIS data, classifies request type, and ensures approval criteria are met. IT resolution agent drafts or simulates IAM changes in sandbox, generates step-by-step instructions. IT staff review and then apply changes manually in production."
+    },
+    {
+      "id": "wl-it-break-fix-faq",
+      "name": "IT Break/Fix and FAQ Self-Service Guidance",
+      "description": "Tickets about common IT issues (VPN, email, device configuration) and general IT FAQs that can be addressed by referencing existing runbooks.",
+      "scope": {
+        "included_ticket_types": [
+          "Known issues with documented troubleshooting workflows (e.g., VPN connection errors, email sync issues).",
+          "Requests for information like 'How do I set up 2FA?' or 'How do I connect to the office Wi-Fi?'.",
+          "Non-urgent, single-user issues without security implications."
+        ],
+        "excluded_ticket_types": [
+          "Potential security incidents (phishing, malware, unauthorized access).",
+          "System-wide outages or performance degradation incidents.",
+          "Hardware failures requiring physical diagnosis."
+        ]
+      },
+      "baseline_process": "IT helpdesk agents follow runbooks and knowledge base articles, copy/paste or paraphrase steps for users, and track progress via ticket updates.",
+      "treatment_process": "IT agents use RAG over runbooks to generate tailored troubleshooting steps and FAQs, potentially handling low-risk tickets autonomously in mode B, with humans intervening on escalations or unclear cases."
+    }
+  ],
+  "controls": {
+    "allocation_strategy": {
+      "method": "Ticket-level randomized controlled trial within each workload, with parallel queues.",
+      "procedure": [
+        "Define eligibility criteria per workload (ticket type, risk exclusions).",
+        "For each incoming eligible ticket, assign uniformly at random to either Control (baseline, human-only) or Treatment (agent-assisted/agentic) path, using a deterministic pseudo-random function seeded with ticket ID where possible.",
+        "Ensure both groups are visible in the same ticketing system but with different workflows (agents active in Treatment only)."
+      ],
+      "stratification": [
+        "Stratify randomization by workload ID (HR onboarding, HR changes/FAQ, IT access, IT break/fix).",
+        "Optionally stratify by priority (e.g., normal vs. high) and requester department to balance load."
+      ]
+    },
+    "time_window": {
+      "baseline_period": "Minimum 4 weeks of pre-intervention data without agents for all included workloads.",
+      "experiment_period": "Minimum 4 weeks of concurrent Control vs. Treatment, preferably 6\u20138 weeks to capture variance.",
+      "seasonality_controls": "Avoid starting during major HR/IT peaks (e.g., year-end, fiscal close, company-wide migrations) or note them explicitly if unavoidable."
+    },
+    "staffing_and_training": {
+      "stable_staffing": "Keep team size and staffing levels (FTEs) for HR and IT constant during experiment period relative to late baseline, or document any changes.",
+      "training": [
+        "Provide equal training on updated policies and systems to staff in both Control and Treatment conditions.",
+        "Train staff in Treatment condition on how to interact with agents (approve, edit, reject) without prescribing different business policies."
+      ]
+    },
+    "policy_freeze": {
+      "change_control": [
+        "Freeze major HR policy changes, IT support policies, or onboarding flows during the main experiment window where feasible.",
+        "If changes are mandatory, log them with effective dates and apply identical documentation updates for both Control and Treatment."
+      ]
+    },
+    "environment_consistency": {
+      "systems": [
+        "Use the same ticketing system, HRIS, IAM, and collaboration tools for both groups.",
+        "Agents access the same underlying knowledge bases as humans, plus agent-specific logs; no special rules for only one arm."
+      ],
+      "model_and_prompt_freeze": "Freeze LLM model versions and prompts used by agents during the main experiment; if tuning is required, record version changes and segment analysis by version where possible."
+    }
+  },
+  "metrics": [
+    {
+      "name": "tickets_resolved",
+      "unit": "count",
+      "description": "Number of tickets closed within the experiment period per workload and arm (Control vs. Treatment). Used for throughput and denominator normalization."
+    },
+    {
+      "name": "time_to_first_response",
+      "unit": "minutes",
+      "description": "Elapsed time from ticket creation to first human- or agent-authored response visible to the requester. Computed as median and distribution (p25, p75, p90) per arm and workload."
+    },
+    {
+      "name": "time_to_resolution",
+      "unit": "minutes",
+      "description": "Elapsed time from ticket creation to ticket resolution/closure. Computed as median and distribution per arm and workload; outliers truncated or winsorized (e.g., 99th percentile) as per analysis plan."
+    },
+    {
+      "name": "human_handling_time",
+      "unit": "person-minutes_per_ticket",
+      "description": "Sum of estimated or measured active human time spent per ticket (reading, writing, executing actions) as captured via time tracking, ticket ownership events, or post-hoc sampling. Compare means/medians per arm."
+    },
+    {
+      "name": "agent_processing_time",
+      "unit": "model-seconds_per_ticket",
+      "description": "Total cumulative LLM compute time (approximate, based on API timestamps) and number of agent calls per ticket, for cost and scalability estimation."
+    },
+    {
+      "name": "internal_nps",
+      "unit": "nps_score_0_to_10",
+      "description": "Internal Net Promoter Score or analogous satisfaction rating gathered via post-resolution survey for HR/IT tickets. Report mean score and NPS (promoters - detractors) per arm and workload."
+    },
+    {
+      "name": "first_contact_resolution_rate",
+      "unit": "fraction_0_to_1",
+      "description": "Share of tickets resolved without requiring the requester to respond multiple times (no back-and-forth beyond initial reply). Approximated via comment counts and sequence patterns."
+    },
+    {
+      "name": "reopen_rate",
+      "unit": "fraction_0_to_1",
+      "description": "Fraction of tickets that are reopened within 7 days of closure, per arm and workload. Indicates accuracy and durability of resolutions."
+    },
+    {
+      "name": "queue_backlog",
+      "unit": "tickets_open",
+      "description": "Average and peak number of open tickets per day per arm and workload, to measure effective throughput and backlog reduction."
+    },
+    {
+      "name": "workload_shift_hr",
+      "unit": "fraction_0_to_1",
+      "description": "For HR staff involved in the experiment, fraction of recorded time spent on routine operations vs. higher-value tasks (exceptions, projects), comparing baseline vs. experiment periods."
+    },
+    {
+      "name": "workload_shift_it",
+      "unit": "fraction_0_to_1",
+      "description": "Analogous to workload_shift_hr, but for IT helpdesk staff."
+    },
+    {
+      "name": "content_error_rate",
+      "unit": "fraction_0_to_1",
+      "description": "Rate at which responses (human-only vs. agent-assisted) require corrections due to factual, policy, or procedural errors, as determined by post-hoc expert review of sampled tickets."
+    },
+    {
+      "name": "privacy_policy_violation_incidents",
+      "unit": "count",
+      "description": "Number of confirmed incidents where responses or actions violated privacy policies, consent requirements, or data minimization rules, as determined by security/privacy review."
+    },
+    {
+      "name": "tool_misuse_rate",
+      "unit": "fraction_0_to_1",
+      "description": "Percent of agent tool calls (e.g., HRIS, IAM sandbox) flagged by guardrails or humans as incorrect, unsafe, or inappropriate."
+    },
+    {
+      "name": "llm_cost_per_ticket",
+      "unit": "currency_per_ticket",
+      "description": "Average direct LLM/API cost per ticket in the Treatment arm, based on token usage logs and provider pricing."
+    }
+  ],
+  "success_criteria": {
+    "primary": [
+      {
+        "description": "Latency improvement",
+        "criterion": "For each workload, Treatment median time_to_resolution is at least 30% lower than Control and the difference is statistically significant at p < 0.05 using appropriate tests (e.g., Mann-Whitney U for non-normal distributions)."
+      },
+      {
+        "description": "Satisfaction non-degradation",
+        "criterion": "For each workload, Treatment internal_nps mean score is not lower than Control by more than 0.5 points on the 0\u201310 scale, and pooled NPS difference is >= +2 points; 95% confidence intervals should include zero or positive shifts."
+      },
+      {
+        "description": "Reduced human effort",
+        "criterion": "For each workload, Treatment median human_handling_time per ticket is at least 25% lower than Control, with non-overlapping 95% confidence intervals or statistically significant difference at p < 0.05."
+      }
+    ],
+    "secondary": [
+      {
+        "description": "Improved or unchanged quality",
+        "criterion": "Treatment content_error_rate is not significantly higher than Control by more than an absolute 2 percentage points for any workload."
+      },
+      {
+        "description": "No critical privacy incidents",
+        "criterion": "privacy_policy_violation_incidents of severity 'critical' (exposing sensitive data to unauthorized parties or violating legal obligations) must be zero for the duration of the experiment."
+      },
+      {
+        "description": "Economic viability",
+        "criterion": "The estimated net savings from reduced human_handling_time (valued at fully loaded hourly rates) minus llm_cost_per_ticket is positive for the aggregated treated workloads."
+      }
+    ],
+    "decision_guidelines": {
+      "proceed_to_scale": "If all primary criteria are met and no critical privacy incidents occur, proceed to expand agent coverage (more ticket types, mode B) with incremental guardrails.",
+      "iterate_or_scope_down": "If latency and human_handling_time improvements occur but quality or satisfaction degrade notably, adjust prompts, tools, and guardrails; reduce fully automated scope to safest workloads.",
+      "rollback": "If any critical privacy incident occurs or if both satisfaction and content_error_rate significantly worsen in Treatment, pause or rollback agentic workflows and conduct root-cause analysis before resuming."
+    }
+  },
+  "failure_modes": [
+    {
+      "name": "hallucinated_or_incorrect_policy_answers",
+      "description": "Agents generate answers that misinterpret HR or IT policies, leading to incorrect or misleading guidance.",
+      "indicators": [
+        "Elevated content_error_rate in Treatment vs. Control.",
+        "Increased reopen_rate for policy-related FAQs.",
+        "Qualitative feedback from HR/IT staff flagging misleading AI suggestions."
+      ],
+      "mitigations": [
+        "Enforce RAG-only answers for policy topics with explicit citation of policies.",
+        "Add strict prompts requiring 'I don\u2019t know' when confidence is low or docs are ambiguous.",
+        "Human approval for all policy-related responses (no full automation for these)."
+      ]
+    },
+    {
+      "name": "privacy_or_consent_violations",
+      "description": "Agents reveal sensitive HR or IT information or fail to minimize personal data in responses or logs.",
+      "indicators": [
+        "privacy_guard_agent returns frequent ESCALATE_TO_HUMAN decisions.",
+        "Security/privacy review flags responses containing salary, performance reviews, or sensitive PII when not strictly necessary.",
+        "Unexpected PII exposure in logs or monitoring dashboards."
+      ],
+      "mitigations": [
+        "Tighten access scopes of agent tools (read-only where possible; no cross-employee queries).",
+        "Strengthen privacy_guard_agent prompts and policies, including redaction rules before logging.",
+        "Introduce additional pre-send checks or require human approval for any message referencing financial or performance data."
+      ]
+    },
+    {
+      "name": "misclassification_and_routing_errors",
+      "description": "Triage agents misclassify tickets, leading to wrong queues, delays, or incorrect handling.",
+      "indicators": [
+        "Higher time_to_first_response or time_to_resolution for misrouted tickets vs. correctly routed ones.",
+        "Increased manual re-routing actions by staff for Treatment tickets.",
+        "User complaints about being bounced between queues."
+      ],
+      "mitigations": [
+        "Use simpler rule-based routing where possible, with the agent only filling structured fields, not making routing decisions.",
+        "Train triage prompts on labeled historical data for typical categories.",
+        "Introduce confidence thresholds where low-confidence classification triggers human triage instead of autonomous routing."
+      ]
+    },
+    {
+      "name": "over_automation_of_high_risk_cases",
+      "description": "Agent attempts to handle cases that are inappropriate for automation (e.g., sensitive HR cases, security incidents).",
+      "indicators": [
+        "Agent attempts to draft communications involving disciplinary issues or legal-sensitive content.",
+        "IT agents attempt to provide advice for incidents that match security keywords.",
+        "Tickets needing escalation still handled end-to-end by agent without human review in Treatment."
+      ],
+      "mitigations": [
+        "Implement explicit exclusion filters based on keyword and category for HR and IT workloads.",
+        "Require explicit human approval for any ticket labeled sensitive or high priority.",
+        "Force fallback to Control-style handling when certain flags are detected (legal, compliance, security)."
+      ]
+    },
+    {
+      "name": "underutilization_of_agents",
+      "description": "Staff ignore or underuse agent suggestions, reducing measurable impact.",
+      "indicators": [
+        "Low ratio of tickets where agent suggestions are requested or displayed in Treatment.",
+        "Minimal difference in human_handling_time between arms, despite agent availability.",
+        "Qualitative feedback about usability or trust issues with the agent interface."
+      ],
+      "mitigations": [
+        "Improve UI integration in ticketing tools; show value-add clearly (e.g., one-click apply suggestions).",
+        "Provide short training and examples that highlight time savings.",
+        "Collect feedback on why suggestions are rejected and refine agents accordingly."
+      ]
+    },
+    {
+      "name": "data_drift_and_knowledge_staleness",
+      "description": "Policy or IT environment changes are not reflected quickly enough in the agent\u2019s knowledge base, causing outdated instructions.",
+      "indicators": [
+        "Agents refer to policies or systems that are no longer in effect.",
+        "Content_error_rate spikes following known policy or system changes.",
+        "Staff override agent-generated steps due to outdated knowledge."
+      ],
+      "mitigations": [
+        "Implement regular knowledge base refresh schedule (e.g., nightly ingestion).",
+        "Create quick-update workflow for HR/IT leadership to flag and prioritize policy/runbook updates.",
+        "Version and timestamp knowledge snapshots used during experiment for traceability."
+      ]
+    }
+  ],
+  "required_environment": {
+    "systems_and_integrations": {
+      "ticketing_system": {
+        "requirements": [
+          "API access for reading, updating, and routing tickets (e.g., Jira Service Management, ServiceNow, Zendesk, or equivalent).",
+          "Ability to tag or custom-field tickets for experiment arm (Control vs. Treatment) and workload ID.",
+          "Webhook or polling capability for real-time or near-real-time agent triggers."
+        ]
+      },
+      "hris": {
+        "requirements": [
+          "Sandbox or test tenant with realistic (synthetic or de-identified) employee records for simulated write actions.",
+          "Read-only API access in production for minimally necessary fields (employee ID, name, department, manager) used in Treatment workflow.",
+          "Auditing and logging enabled for all read/write operations used in the experiment."
+        ]
+      },
+      "identity_and_it_systems": {
+        "requirements": [
+          "IAM sandbox environment or test apps for non-destructive access-change simulations.",
+          "Access to production IAM read-only APIs or status APIs (e.g., user existence, current entitlements) if allowed by security.",
+          "IT knowledge base access for RAG (e.g., Confluence, SharePoint, Git-based runbook repo)."
+        ]
+      },
+      "llm_and_orchestration": {
+        "requirements": [
+          "LLM provider with API-level access (OpenAI, Anthropic, local model, etc.) with sufficient rate limits.",
+          "Orchestration layer (custom service or existing framework) to implement HR/IT agents, tool calling, and privacy guard agent.",
+          "Secure secret storage for API keys and system credentials."
+        ]
+      }
+    },
+    "data_and_privacy": {
+      "data_policies": [
+        "Use synthetic or de-identified HR data in sandbox environments for any write actions.",
+        "Limit PII accessible to agents to what is strictly necessary for the experiment; default to minimal data fields.",
+        "Do not transmit sensitive HR data to third-party LLM providers without appropriate DPA and legal review."
+      ],
+      "access_control": [
+        "Create dedicated technical service accounts for agent access with least-privilege permissions.",
+        "Ensure that log storage for experiments is access-controlled; logs must not include full unredacted PII where not required."
+      ],
+      "compliance_approvals": [
+        "Obtain sign-off from HR, IT, security, and legal (or equivalents) before starting live experiments.",
+        "Ensure employees are aware that AI-assisted agents may be used in internal service interactions, with clear contacts for concerns."
+      ]
+    },
+    "technical_stack_expectations": {
+      "language_and_runtime": [
+        "Python-based reference implementation expected in the public GitHub repository (as per book), but language-agnostic equivalent acceptable.",
+        "Runtime environment capable of scheduled jobs or webhooks for event-driven processing."
+      ],
+      "monitoring_and_logging": [
+        "Centralized logging for agent actions (inputs, outputs, tool calls, decisions) with correlation IDs per ticket.",
+        "Dashboards for key metrics (latency, volume, error flags) across Control vs. Treatment.",
+        "Capability to export metrics for analysis (e.g., CSV to data warehouse or notebook)."
+      ]
+    }
+  },
+  "run_instructions": {
+    "pre_experiment_setup": [
+      "1. Define exact HR and IT workloads using the provided workload templates, including inclusion/exclusion criteria, in collaboration with HR and IT leaders.",
+      "2. Configure ticketing system to tag tickets by workload ID and to support random assignment into Control and Treatment groups upon ticket creation.",
+      "3. Implement or configure HR and IT agents (triage, resolution, and privacy guard) following chapter 11 patterns, wiring tools for ticketing, HRIS sandbox, IAM sandbox, and RAG-based knowledge access.",
+      "4. Establish synthetic or de-identified HR and IT datasets in sandbox environments, mirroring realistic structures and common scenarios.",
+      "5. Integrate agents with monitoring and logging infrastructure; ensure that logs capture experiment arm, ticket ID, timestamps, and agent actions without unnecessary PII.",
+      "6. Conduct security and privacy review of the architecture, access roles, and logging configuration with relevant stakeholders. Address any raised issues prior to live operation.",
+      "7. Run dry-run tests on synthetic tickets to validate classification, routing, and basic response quality, verifying that no high-risk actions are executed automatically.",
+      "8. Train HR and IT staff in Treatment group on how to interpret, accept, edit, or reject agent suggestions, as well as how to flag problematic outputs."
+    ],
+    "baseline_data_collection": [
+      "9. For at least 4 weeks before enabling agents, log key metrics (time_to_first_response, time_to_resolution, reopen_rate, internal_nps, and human_handling_time where possible) for the chosen workloads under business-as-usual operations.",
+      "10. Clean and validate baseline data: ensure ticket types are correctly labeled into the workloads and remove out-of-scope or edge cases as per workload definitions.",
+      "11. Compute baseline summary statistics per workload for all key metrics; store these securely and version them as the baseline reference dataset."
+    ],
+    "experiment_execution": [
+      "12. Activate random assignment to Control vs. Treatment upon ticket creation for all eligible workloads, ensuring that randomization logic is tested in a staging environment first.",
+      "13. Enable agentic workflows in Treatment arm in Mode A (assistive) initially. Ensure that for all Treatment tickets, agent suggestions are logged, and whether suggestions were accepted or edited is recorded.",
+      "14. Continue running both arms in parallel for at least 2 weeks in Mode A. Monitor for anomalies (errors, privacy flags, extreme latencies) daily.",
+      "15. After 2 weeks, analyze interim data focusing on quality and incidents: verify that no critical privacy incidents occurred and that content_error_rate is acceptable.",
+      "16. If criteria for partial autonomy are met and governance approvals are secured, enable Mode B for a carefully scoped subset of low-risk ticket types (e.g., subset of IT FAQs and HR policy FAQs). Keep all other tickets in Mode A.",
+      "17. Continue experiment for an additional 2\u20134 weeks with Mode A and Mode B active, monitoring key outcomes and incident reports; be prepared to quickly disable Mode B if any severe issue arises.",
+      "18. For the entire experiment period, regularly (e.g., weekly) sample a stratified set of Control and Treatment tickets for expert review to estimate content_error_rate and detect subtle policy or privacy issues."
+    ],
+    "data_collection_and_analysis": [
+      "19. At the end of the experiment, extract full ticket-level logs from ticketing, HRIS, IAM sandbox, and agent orchestration systems, including timestamps, experiment arm, workload ID, and actions.",
+      "20. Clean and merge datasets using ticket ID or correlation ID; ensure that any PII used during analysis is handled under privacy policies and, where possible, use pseudonymization.",
+      "21. Compute metrics per ticket and aggregate them per workload and experiment arm (Control vs. Treatment), including distribution statistics for latency and handling time.",
+      "22. Perform statistical tests comparing Control vs. Treatment for primary metrics per workload (e.g., Mann-Whitney U test for time_to_resolution; t-test or non-parametric equivalent for internal_nps; proportion tests for reopen_rate and content_error_rate).",
+      "23. Estimate agent-related costs from LLM usage logs and provider pricing schedules to derive llm_cost_per_ticket; combine with human_handling_time and loaded labor rates to estimate economic impacts.",
+      "24. Document all incident reports and qualitative feedback from HR/IT staff and employees interacting with the system; categorize them by severity and theme.",
+      "25. Compare outcomes against the predefined success_criteria and decision_guidelines; summarize findings in an experiment report that includes methodology, limitations, and recommendations."
+    ],
+    "post_experiment_actions": [
+      "26. Present results to stakeholders (HR, IT, security, operations leadership) highlighting performance improvements, satisfaction data, quality, and incident summaries.",
+      "27. Decide whether to expand, modify, or rollback agentic workflows based on experiment outcomes and risk tolerance.",
+      "28. Update documentation and knowledge bases to reflect lessons learned, including updates to cross-domain reusable components (triage patterns, privacy guardrails, RAG configuration) as suggested in section 11.7.",
+      "29. Optionally, repeat the experiment for additional workloads or with alternative agent architectures to further validate or refine patterns."
+    ]
+  },
+  "evidence_schema": {
+    "ticket_record": {
+      "ticket_id": "string",
+      "workload_id": "string (e.g., 'wl-hr-onboarding', 'wl-it-break-fix-faq')",
+      "experiment_arm": "string (Control | Treatment)",
+      "mode": "string (baseline | mode_a_assistive | mode_b_partially_autonomous)",
+      "created_at": "ISO8601 timestamp",
+      "first_response_at": "ISO8601 timestamp or null if no response",
+      "resolved_at": "ISO8601 timestamp or null if unresolved",
+      "reopened_within_7d": "boolean",
+      "requester_department": "string or null (if collected)",
+      "priority": "string (low | normal | high | urgent or org-specific enum)",
+      "ticket_type": "string (fine-grained category name used by the organization)",
+      "satisfaction_score": "number (0\u201310 scale) or null if no survey",
+      "nps_label": "string (detractor | passive | promoter | null)"
+    },
+    "agent_interaction_record": {
+      "interaction_id": "string",
+      "ticket_id": "string",
+      "timestamp": "ISO8601 timestamp",
+      "agent_role": "string (hr_triage_agent | hr_resolution_agent | it_triage_agent | it_resolution_agent | privacy_guard_agent)",
+      "input_summary": "string (short text description or hashed reference to maintain privacy)",
+      "output_summary": "string (short text description or hashed reference)",
+      "tools_invoked": [
+        {
+          "tool_name": "string (ticketing_api | hris_read | hris_write_sandbox | iam_read | iam_write_sandbox | rag_hr_policies | rag_it_runbooks)",
+          "success": "boolean",
+          "error_type": "string or null (timeout | validation_error | permission_denied | other)",
+          "duration_ms": "integer"
+        }
+      ],
+      "guardrail_decision": "string (none | approve | rewrite_with_redaction | escalate_to_human)",
+      "accepted_by_human": "boolean or null (true if human used/approved suggestion, false if directly rejected, null if no human review in fully autonomous path)"
+    },
+    "quality_review_record": {
+      "review_id": "string",
+      "ticket_id": "string",
+      "experiment_arm": "string (Control | Treatment)",
+      "workload_id": "string",
+      "reviewer_role": "string (hr_expert | it_expert | privacy_officer | qa_analyst)",
+      "review_timestamp": "ISO8601 timestamp",
+      "content_error": "boolean",
+      "error_severity": "string (minor | moderate | severe)",
+      "error_types": [
+        "string (policy_misinterpretation | factual_error | incomplete_resolution | privacy_violation | security_risk | tone_issue | other)"
+      ],
+      "comments": "string (free-text notes, stored in secure environment)"
+    },
+    "time_tracking_record": {
+      "record_id": "string",
+      "ticket_id": "string",
+      "staff_id": "string or pseudonymized identifier",
+      "role": "string (hr_staff | it_staff)",
+      "start_time": "ISO8601 timestamp",
+      "end_time": "ISO8601 timestamp",
+      "activity_type": "string (reading_ticket | executing_change | writing_response | exception_handling | supervision_of_agent | other)"
+    },
+    "incident_record": {
+      "incident_id": "string",
+      "ticket_id": "string or null if not ticket-specific",
+      "timestamp": "ISO8601 timestamp",
+      "type": "string (privacy_violation | security_issue | major_policy_error | system_outage | other)",
+      "severity": "string (low | medium | high | critical)",
+      "description": "string (summary of incident, kept in secure log)",
+      "detected_by": "string (human_report | automated_guardrail | audit_review)",
+      "mitigation_actions": "string (summary)",
+      "resolved_at": "ISO8601 timestamp or null"
+    },
+    "metric_aggregates": {
+      "aggregation_id": "string",
+      "workload_id": "string",
+      "experiment_arm": "string (Control | Treatment)",
+      "period_start": "ISO8601 date or timestamp",
+      "period_end": "ISO8601 date or timestamp",
+      "tickets_resolved": "integer",
+      "time_to_first_response_stats": {
+        "median_minutes": "number",
+        "p25_minutes": "number",
+        "p75_minutes": "number",
+        "p90_minutes": "number"
+      },
+      "time_to_resolution_stats": {
+        "median_minutes": "number",
+        "p25_minutes": "number",
+        "p75_minutes": "number",
+        "p90_minutes": "number"
+      },
+      "human_handling_time_stats": {
+        "mean_minutes": "number",
+        "median_minutes": "number"
+      },
+      "first_contact_resolution_rate": "number (0\u20131)",
+      "reopen_rate": "number (0\u20131)",
+      "internal_nps_mean_score": "number (0\u201310)",
+      "internal_nps_value": "number (-100 to 100)",
+      "content_error_rate": "number (0\u20131)",
+      "privacy_policy_violation_incidents": "integer",
+      "llm_cost_per_ticket": "number (currency units)",
+      "workload_shift_hr": "number (0\u20131 or null if not measured)",
+      "workload_shift_it": "number (0\u20131 or null if not measured)"
+    }
+  }
+}
